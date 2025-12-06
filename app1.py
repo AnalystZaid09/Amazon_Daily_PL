@@ -94,21 +94,33 @@ def compute_financials(df):
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     return df
 
-# ----------------- Sidebar / Uploads / Options -----------------
-with st.sidebar:
-    st.header("Upload Files & Options")
-    skip_rows = st.number_input("Rows to skip in CSV", min_value=0, max_value=200, value=11,
-                                 help="Number of header rows to skip in the transaction CSV")
+
+# ----------------- Uploads / Options (CENTER, not sidebar) -----------------
+st.markdown("---")
+st.header("Upload Files & Options")
+
+left_col, right_col = st.columns(2)
+
+with left_col:
+    skip_rows = st.number_input(
+        "Rows to skip in CSV",
+        min_value=0,
+        max_value=200,
+        value=11,
+        help="Number of header rows to skip in the transaction CSV"
+    )
     transaction_file = st.file_uploader("Upload Transaction CSV", type=['csv'])
     pm_file = st.file_uploader("Upload Product Master (PM.xlsx)", type=['xlsx', 'xls'])
+
+with right_col:
     dyson_support_file = st.file_uploader("Optional: Dyson Support file (CSV / XLSX)", type=['csv','xlsx','xls'])
 
     st.markdown("---")
     st.subheader("Dyson override settings")
     dyson_detect = st.selectbox("Detect Dyson rows by:", [
-        'Product Name contains \"dyson\" (default)',
-        'Purchase Member Name contains \"dyson\"',
-        'Brand column equals \"Dyson\" (PM-based)'
+        'Product Name contains "dyson" (default)',
+        'Purchase Member Name contains "dyson"',
+        'Brand column equals "Dyson" (PM-based)'
     ])
     dyson_agg = st.selectbox("Aggregation for Dyson support file (if multiple rows per SKU):", ['last', 'max', 'mean'])
 
@@ -116,6 +128,7 @@ with st.sidebar:
     st.subheader("Export options")
     enable_excel_export = st.checkbox("Enable Excel export (styled)", value=True)
     # PDF export removed as requested
+
 
 # ----------------- Main processing -----------------
 if transaction_file and pm_file:
@@ -271,7 +284,7 @@ if transaction_file and pm_file:
         # compute financials
         merged = compute_financials(merged)
 
-        # ----------------- Dyson override (improved controls) -----------------
+        # ----------------- Dyson override (same as before) -----------------
         if dyson_support_file is not None:
             try:
                 if str(dyson_support_file.name).lower().endswith('.csv'):
@@ -285,7 +298,6 @@ if transaction_file and pm_file:
 
             if df_dyson is not None:
                 dy_cols_lower = [c.lower().strip() for c in df_dyson.columns]
-                # prefer 'Amazon SKU' else fallbacks
                 dy_possible_sku = ['amazon sku','amazon_sku','sku','seller sku','product sku','asin']
                 dy_sku_col = None
                 for name in dy_possible_sku:
@@ -295,7 +307,6 @@ if transaction_file and pm_file:
                 if dy_sku_col is None and len(df_dyson.columns) >= 3:
                     dy_sku_col = df_dyson.columns[2]
 
-                # support column detection
                 dy_support_col = 'Unnamed: 14' if 'Unnamed: 14' in df_dyson.columns else None
                 if dy_support_col is None:
                     for cand in ['support amount','support','support_price','support_amount']:
@@ -330,7 +341,6 @@ if transaction_file and pm_file:
 
                     support_map = dict(zip(df_dyson_agg['_sku_norm_dy'], df_dyson_agg[dy_support_col]))
 
-                    # Dyson row detection method
                     if dyson_detect.startswith('Product Name'):
                         prod_name_series = merged.get('Product Name', pd.Series('', index=merged.index)).astype(str).str.lower()
                         dyson_mask = prod_name_series.str.contains('dyson', na=False)
@@ -354,10 +364,8 @@ if transaction_file and pm_file:
                     merged.drop(columns=['_sku_norm_txn', '__dyson_support_candidate'], inplace=True, errors='ignore')
 
                     st.success(f"Dyson override applied: updated Support Amount for {updated_count} Dyson rows (matched by SKU).")
-                    # recompute
                     merged = compute_financials(merged)
 
-                    # offer download of the Dyson mapping used
                     map_df = df_dyson_agg.rename(columns={'_sku_norm_dy': 'SKU_NORM', dy_support_col: 'Dyson Support Amount'})
                     map_bytes = io.BytesIO()
                     map_df.to_csv(map_bytes, index=False)
@@ -374,7 +382,6 @@ if transaction_file and pm_file:
 
         ordered_on_col = find_col_by_names(final_df.columns, ['date/time','order date','ordered on','date'])
         if ordered_on_col:
-            # KEEP Ordered On as text — do NOT parse/convert
             final_df = final_df.rename(columns={ordered_on_col: 'Ordered On'})
 
         order_item_id_col = find_col_by_names(final_df.columns, ['settlement id','order item id','order item','settlementid'])
@@ -439,7 +446,6 @@ if transaction_file and pm_file:
             avg_margin = (total_profit / cost_sum * 100) if cost_sum != 0 else 0
             st.metric("Avg Profit Margin", f"{avg_margin:.2f}%")
 
-        # Additional KPIs
         col5, col6, col7, col8 = st.columns(4)
         with col5:
             amazon_fees_sum = filtered['Amazon Total Fees'].sum() if 'Amazon Total Fees' in filtered.columns else 0
@@ -454,7 +460,6 @@ if transaction_file and pm_file:
             unique_skus = filtered['SKU'].nunique() if 'SKU' in filtered.columns else 0
             st.metric("Unique SKUs", f"{unique_skus}")
 
-        # Charts (only product-based charts — no time series)
         st.markdown("---")
         st.subheader("Charts")
         if 'Product Name' in filtered.columns and 'Profit' in filtered.columns:
@@ -465,7 +470,6 @@ if transaction_file and pm_file:
         st.header("Processed Data (Filtered)")
         st.dataframe(filtered, use_container_width=True, height=400)
 
-        # Export filtered data: CSV (same filename), Excel (styled)
         csv_bytes = filtered.to_csv(index=False).encode('utf-8')
         st.download_button("Download Filtered CSV", data=csv_bytes, file_name=f"{os.path.splitext(orig_name)[0]}_filtered.csv", mime='text/csv')
 
@@ -478,25 +482,14 @@ if transaction_file and pm_file:
             return s
 
         def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currency_symbol='₹'):
-            """
-            Create an XLSX bytes object with:
-              - 'Data' sheet: styled header, freeze pane, autofilter, SKU preserved as text,
-                              conditional formatting on profit columns, currency formats
-              - 'Summary' sheet: key metrics + top 20 Profit by Product table
-            All datetime-like objects are coerced to strings before writing.
-            """
             df_write = df.copy()
-
-            # --- Force any datetime-like objects to strings (we don't want Excel to receive timezone-aware datetimes) ---
             for col in df_write.columns:
                 df_write[col] = df_write[col].apply(lambda x: str(x) if isinstance(x, (pd.Timestamp, __import__('datetime').datetime)) else x)
 
-            # Ensure SKU-like columns remain strings (preserve formatting)
             sku_cols = [c for c in df_write.columns if c.lower().strip() == "sku" or 'sku' in c.lower()]
             for c in sku_cols:
                 df_write[c] = df_write[c].astype(str).fillna('')
 
-            # Attempt to coerce numeric-like columns (but keep SKU untouched)
             for col in df_write.columns:
                 if col in sku_cols:
                     continue
@@ -504,7 +497,6 @@ if transaction_file and pm_file:
                 if sample.size > 0 and (sample.str.match(r'^[\-\d\.\(\), ]+$').sum() / sample.size) > 0.6:
                     df_write[col] = pd.to_numeric(df_write[col].astype(str).str.replace(",", "", regex=False), errors='coerce')
 
-            # target profit columns to conditional-format
             profit_cols = [c for c in [
                 "Profit",
                 "Profit In Percentage",
@@ -518,12 +510,10 @@ if transaction_file and pm_file:
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 workbook = writer.book
 
-                # --- Sheet: Data (full table) ---
                 sheet_name = "Data"
                 df_write.to_excel(writer, index=False, sheet_name=sheet_name, startrow=0, header=True)
                 worksheet = writer.sheets[sheet_name]
 
-                # Formats
                 header_format = workbook.add_format({
                     'bold': True, 'text_wrap': True, 'valign': 'vcenter',
                     'fg_color': header_hex, 'font_color': '#FFFFFF', 'border': 1
@@ -532,9 +522,8 @@ if transaction_file and pm_file:
                 integer_fmt = workbook.add_format({'num_format': '0', 'border': 1})
                 pct_fmt = workbook.add_format({'num_format': '0.00"%";-0.00"%"', 'border': 1})
                 default_fmt = workbook.add_format({'border': 1})
-                sku_fmt = workbook.add_format({'num_format': '@', 'border': 1})  # text format
+                sku_fmt = workbook.add_format({'num_format': '@', 'border': 1})
 
-                # Write header with styling and set column widths smartly
                 for col_num, col_name in enumerate(df_write.columns):
                     worksheet.write(0, col_num, col_name, header_format)
                     try:
@@ -547,11 +536,9 @@ if transaction_file and pm_file:
                     max_len = min(max_len, 60)
                     worksheet.set_column(col_num, col_num, max_len)
 
-                # Freeze header row & add autofilter
                 worksheet.freeze_panes(1, 0)
                 worksheet.autofilter(0, 0, len(df_write), len(df_write.columns) - 1)
 
-                # Apply formats to data range by column type
                 for col_idx, col_name in enumerate(df_write.columns):
                     series = df_write[col_name]
                     if col_name in sku_cols:
@@ -569,14 +556,13 @@ if transaction_file and pm_file:
                     else:
                         worksheet.set_column(col_idx, col_idx, None, default_fmt)
 
-                # Conditional formatting for profit columns: green >=0, red <0
                 pos_format = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
                 neg_format = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
                 for pcol in profit_cols:
                     try:
                         col_idx = list(df_write.columns).index(pcol)
                         col_letter = _xl_col_letter(col_idx)
-                        first_row = 2  # Excel row index where data starts (1-based header at row 1)
+                        first_row = 2
                         last_row = len(df_write) + 1
                         cell_range = f'{col_letter}{first_row}:{col_letter}{last_row}'
                         worksheet.conditional_format(cell_range, {'type': 'cell', 'criteria': '>=', 'value': 0, 'format': pos_format})
@@ -584,7 +570,6 @@ if transaction_file and pm_file:
                     except Exception:
                         pass
 
-                # --- Sheet: Summary ---
                 summary_name = "Summary"
                 total_rows = len(df_write)
                 total_sales = df_write.get('Sales Proceed', pd.Series([])).sum(skipna=True) if 'Sales Proceed' in df_write.columns else 0
@@ -649,7 +634,6 @@ if transaction_file and pm_file:
             output.seek(0)
             return output.read()
 
-        # Excel download button now exports the FILTERED dataframe (ensures summary matches UI)
         if enable_excel_export:
             st.markdown("---")
             st.header("Export: Styled Excel (Summary + Data) — exports current FILTERED view")
@@ -678,16 +662,15 @@ if transaction_file and pm_file:
         st.error(f"Error processing files: {e}")
         st.exception(e)
 else:
-    st.info("Please upload both files in the sidebar to begin analysis.")
+    st.info("Please upload both files above to begin analysis.")
     with st.expander("Instructions"):
         st.markdown("""
         ### How to use this application:
-        1. **Upload Transaction CSV**: Your Amazon unified transaction report
-           - The app will skip the first N rows by default (configurable)
-        2. **Upload Product Master (PM.xlsx)**: Excel file with product information
-        3. **(Optional) Upload Dyson Support file**:
-           - If Dyson SKUs have separate support amounts in a different file, upload here.
-           - You can choose aggregation (last/max/mean) and detection method.
+        1. **Upload Transaction CSV**: Your Amazon unified transaction report  
+           - The app will skip the first N rows by default (configurable)  
+        2. **Upload Product Master (PM.xlsx)**: Excel file with product information  
+        3. **(Optional) Upload Dyson Support file**:  
+           - Separate support amounts for Dyson SKUs  
+           - You can choose aggregation (last/max/mean) and detection method  
         4. Use filters and charts to inspect data. Export filtered results to CSV/Excel.
         """)
-
