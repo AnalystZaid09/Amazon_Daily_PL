@@ -283,10 +283,20 @@ if transaction_file and pm_file:
         merged = compute_financials(merged)
 
         # ----------------- Finalize final_df -----------------
-        final_df = merged.rename(columns={
-            'order id': 'Order Id', 'Purchase Member Name': 'Purchase Member Name',
-            'Product Name': 'Product Name', 'description': 'Description', 'Quantity': 'Quantity', 'SKU__': 'SKU'
-        })
+        # Detect Order Id column (case-insensitive)
+        order_id_col = find_col_by_names(merged.columns, ['order id', 'order_id', 'orderid', 'amazon order id', 'amazon-order-id'])
+        
+        rename_dict = {
+            'Purchase Member Name': 'Purchase Member Name',
+            'Product Name': 'Product Name', 
+            'description': 'Description', 
+            'Quantity': 'Quantity', 
+            'SKU__': 'SKU'
+        }
+        if order_id_col:
+            rename_dict[order_id_col] = 'Order Id'
+            
+        final_df = merged.rename(columns=rename_dict)
 
         ordered_on_col = find_col_by_names(final_df.columns, ['date/time','order date','ordered on','date'])
         if ordered_on_col:
@@ -386,8 +396,11 @@ if transaction_file and pm_file:
             for c in sku_cols:
                 df_write[c] = df_write[c].astype(str).fillna('')
 
+            # Columns that should NOT be converted to numeric (text/ID columns)
+            text_cols = sku_cols + [c for c in df_write.columns if any(x in c.lower() for x in ['order id', 'order_id', 'item id', 'settlement', 'description', 'ordered on', 'date', 'name', 'member'])]
+            
             for col in df_write.columns:
-                if col in sku_cols:
+                if col in text_cols:
                     continue
                 sample = df_write[col].astype(str).str.replace(",", "", regex=False).replace('', np.nan).dropna()
                 if sample.size > 0 and (sample.str.match(r'^[\-\d\.\(\), ]+$').sum() / sample.size) > 0.6:
