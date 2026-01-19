@@ -140,19 +140,22 @@ if transaction_file and pm_file:
 
         # detect SKU columns
         df_cols_lower = [c.lower().strip() for c in df.columns]
-        possible_sku_names = ['sku', 'seller sku', 'asin', 'product sku', 'item sku', 'sku id']
+        possible_sku_names = ['sku', 'seller sku', 'product sku', 'item sku', 'sku id']
         sku_col_df = None
         for name in possible_sku_names:
             if name in df_cols_lower:
                 sku_col_df = df.columns[df_cols_lower.index(name)]
                 break
-        if sku_col_df is None:
-            for c in df.columns:
-                if 'sku' in str(c).lower():
-                    sku_col_df = c
-                    break
-        if sku_col_df is None:
-            raise ValueError("Couldn't detect SKU column in transaction CSV. Expected column like 'Sku' or 'Seller SKU'.")
+        
+        # also try to find ASIN specifically if it's there
+        asin_col_df = None
+        for name in ['asin', 'product asin', 'amazon asin']:
+            if name in df_cols_lower:
+                asin_col_df = df.columns[df_cols_lower.index(name)]
+                break
+
+        if sku_col_df is None and asin_col_df is None:
+            raise ValueError("Couldn't detect SKU or ASIN column in transaction CSV.")
 
         # PM SKU detection
         possible_pm_sku_names = ['sku', 'seller sku', 'amazon sku', 'product sku', 'sku id']
@@ -162,9 +165,20 @@ if transaction_file and pm_file:
         if sku_col_pm is None:
             raise ValueError("Couldn't detect SKU column in PM file. Ensure SKU is present in PM.")
 
-        # normalize SKUs
-        df[sku_col_df] = df[sku_col_df].apply(clean_sku_val)
+        # PM ASIN detection
+        asin_col_pm = find_col_by_names(pm.columns, ['asin', 'amazon asin', 'product asin', 'amazon sku name'])
+        if asin_col_pm is None and 'asin' in str(pm.columns[0]).lower():
+            asin_col_pm = pm.columns[0]
+
+        # normalize SKUs and ASINs
+        if sku_col_df:
+            df[sku_col_df] = df[sku_col_df].apply(clean_sku_val)
+        if asin_col_df:
+            df[asin_col_df] = df[asin_col_df].astype(str).str.strip().str.upper()
+
         pm[sku_col_pm] = pm[sku_col_pm].apply(clean_sku_val)
+        if asin_col_pm:
+            pm[asin_col_pm] = pm[asin_col_pm].astype(str).str.strip().str.upper()
 
         # detect PM columns
         purchase_member_col = find_col_by_names(pm.columns, ['purchase member name', 'purchase member', 'member'])
@@ -186,11 +200,18 @@ if transaction_file and pm_file:
             pass
 
         pm_merge_cols = [sku_col_pm]
-        for c in [purchase_member_col, product_name_col, our_cost_col, support_amount_col]:
+        for c in [purchase_member_col, product_name_col, our_cost_col, support_amount_col, asin_col_pm]:
             if c is not None:
                 pm_merge_cols.append(c)
 
         pm_subset = pm[pm_merge_cols].copy()
+        
+        # Deduplicate PM subset to prevent row explosion during merge
+        if asin_col_pm and asin_col_pm in pm_subset.columns:
+            pm_subset = pm_subset.sort_values(by=[asin_col_pm]).drop_duplicates(subset=[asin_col_pm], keep='first')
+        elif sku_col_pm and sku_col_pm in pm_subset.columns:
+            pm_subset = pm_subset.sort_values(by=[sku_col_pm]).drop_duplicates(subset=[sku_col_pm], keep='first')
+            
         if our_cost_col is not None:
             pm_subset[our_cost_col] = pm_subset[our_cost_col].astype(str).str.replace(",", "", regex=False)
             pm_subset[our_cost_col] = pd.to_numeric(pm_subset[our_cost_col], errors='coerce')
@@ -245,11 +266,17 @@ if transaction_file and pm_file:
             gst_col = 'GST_TEMP_ZERO'
             df_order[gst_col] = 0.0
 
-        df_order = df_order[df_order[product_sales_col].fillna(0) != 0].copy()
-        df_order = df_order.rename(columns={sku_col_df: 'SKU__'})
-        df_order['SKU__'] = df_order['SKU__'].apply(clean_sku_val)
+        if asin_col_df:
+            df_order = df_order.rename(columns={asin_col_df: 'ASIN__'})
+        if sku_col_df:
+            df_order = df_order.rename(columns={sku_col_df: 'SKU__'})
 
-        merged = df_order.merge(pm_subset, how='left', left_on='SKU__', right_on=sku_col_pm, suffixes=('', '_pm'))
+        # Primary merge on ASIN if both files have it
+        if asin_col_df and asin_col_pm:
+            merged = df_order.merge(pm_subset, how='left', left_on='ASIN__', right_on=asin_col_pm, suffixes=('', '_pm'))
+        else:
+            # Fallback to SKU merge
+            merged = df_order.merge(pm_subset, how='left', left_on='SKU__', right_on=sku_col_pm, suffixes=('', '_pm'))
 
         # rename columns to stable names
         if purchase_member_col is not None:
@@ -260,6 +287,8 @@ if transaction_file and pm_file:
             merged.rename(columns={our_cost_col: 'Our Cost'}, inplace=True)
         if support_amount_col is not None:
             merged.rename(columns={support_amount_col: 'Support Amount'}, inplace=True)
+        if asin_col_pm is not None:
+            merged.rename(columns={asin_col_pm: 'ASIN'}, inplace=True)
 
         if total_col in merged.columns:
             merged[total_col] = merged[total_col].astype(str).str.replace(",", "", regex=False)
@@ -308,7 +337,7 @@ if transaction_file and pm_file:
 
         final_columns = [
             "Ordered On", "ORDER ITEM ID", "Purchase Member Name", "Order Id",
-            "Product Name", "Description", "Quantity", "SKU", "Sales Proceed",
+            "Product Name", "ASIN", "Description", "Quantity", "SKU", "Sales Proceed",
             "Amazon Total Fees", "Amazon Fees In %", "Tranfered Price",
             "Our Cost", "Our Cost As Per Qty", "Profit", "Profit In Percentage",
             "Support Amount", "With BackEnd Price", "With Support Purchase As Per Qty",
@@ -397,7 +426,7 @@ if transaction_file and pm_file:
                 df_write[c] = df_write[c].astype(str).fillna('')
 
             # Columns that should NOT be converted to numeric (text/ID columns)
-            text_cols = sku_cols + [c for c in df_write.columns if any(x in c.lower() for x in ['order id', 'order_id', 'item id', 'settlement', 'description', 'ordered on', 'date', 'name', 'member'])]
+            text_cols = sku_cols + [c for c in df_write.columns if any(x in c.lower() for x in ['order id', 'order_id', 'item id', 'settlement', 'description', 'ordered on', 'date', 'name', 'member', 'asin'])]
             
             for col in df_write.columns:
                 if col in text_cols:
