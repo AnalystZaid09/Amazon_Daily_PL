@@ -17,14 +17,27 @@ st.markdown(
 
 # ----------------- Helpers -----------------
 
-def clean_numeric(s):
-    s = s.astype(str).fillna("").str.strip()
-    s = s.replace({'': np.nan, 'nan': np.nan, 'NaN': np.nan, 'N/A': np.nan, 'n/a': np.nan, '-': np.nan})
+def clean_numeric(series):
+    """Robustly convert a series of strings (with currency, commas, parentheses) to floats."""
+    s = series.astype(str).fillna("0").str.strip()
+    s = s.replace({'': '0', 'nan': '0', 'NaN': '0', 'N/A': '0', 'n/a': '0', '-': '0'})
+    
+    # Standardize all dash variants to a standard hyphen
+    s = s.str.replace('–', '-', regex=False).str.replace('—', '-', regex=False)
+    
+    # Identify negative values (start with hyphen or wrapped in parentheses)
     is_paren = s.str.startswith('(') & s.str.endswith(')')
-    s_no_paren = s.str.replace(r'^[\(\)]|[\(\)]$', '', regex=True)
-    s_no_commas = s_no_paren.str.replace(",", "", regex=False).str.replace(r'[^\d\.\-]', '', regex=True)
-    s_final = np.where(is_paren, '-' + s_no_commas, s_no_commas)
-    return pd.to_numeric(s_final, errors='coerce')
+    is_hyphen = s.str.contains('-', regex=False)
+    
+    # Strip everything except digits and dots
+    s_clean = s.str.replace(r'[^\d\.]', '', regex=True)
+    s_clean = s_clean.replace('', '0')
+    
+    nums = pd.to_numeric(s_clean, errors='coerce').fillna(0)
+    
+    # Apply negative sign if it was originally there
+    res = np.where(is_paren | is_hyphen, -nums, nums)
+    return pd.Series(res, index=series.index)
 
 
 def clean_sku_val(x):
@@ -55,28 +68,36 @@ def compute_financials(df):
     for col in ["Sales Proceed", "Tranfered Price", "Our Cost", "Support Amount"]:
         if col not in df.columns:
             df[col] = np.nan
-    df["Sales Proceed"] = pd.to_numeric(df["Sales Proceed"].astype(str).str.replace(",", "", regex=False), errors='coerce').fillna(0)
-    df["Tranfered Price"] = pd.to_numeric(df["Tranfered Price"].astype(str).str.replace(",", "", regex=False), errors='coerce').fillna(0)
-    df["Our Cost"] = pd.to_numeric(df["Our Cost"].astype(str).str.replace(",", "", regex=False), errors='coerce').fillna(0)
-    df["Support Amount"] = pd.to_numeric(df["Support Amount"].astype(str).str.replace(",", "", regex=False), errors='coerce').fillna(0)
-    df["Quantity"] = pd.to_numeric(df.get("Quantity", 1).astype(str).str.replace(",", "", regex=False), errors='coerce').fillna(1)
+    df["Sales Proceed"] = clean_numeric(df["Sales Proceed"])
+    df["Tranfered Price"] = clean_numeric(df["Tranfered Price"])
+    df["Our Cost"] = clean_numeric(df["Our Cost"])
+    df["Support Amount"] = clean_numeric(df["Support Amount"])
+    
+    if "Quantity" in df.columns:
+        df["Quantity"] = clean_numeric(df["Quantity"])
+    else:
+        df["Quantity"] = 1.0
+    
+    df["Quantity"] = df["Quantity"].replace(0, 1).fillna(1)
 
     df["Amazon Total Fees"] = df["Sales Proceed"] - df["Tranfered Price"]
-    df["Amazon Fees In %"] = np.where(df["Sales Proceed"] != 0, (df["Amazon Total Fees"] / df["Sales Proceed"]) * 100, np.nan)
+    df["Amazon Fees In %"] = np.where(df["Sales Proceed"] != 0, (df["Amazon Total Fees"] / df["Sales Proceed"]) * 100, 0)
     df["Amazon Fees In %"] = df["Amazon Fees In %"].round(2)
 
     df["Our Cost As Per Qty"] = df["Our Cost"] * df["Quantity"]
 
     df["Profit"] = df["Tranfered Price"] - df["Our Cost As Per Qty"]
-    df["Profit In Percentage"] = np.where(df["Our Cost As Per Qty"] > 0, (df["Profit"] * 100) / df["Our Cost As Per Qty"], np.nan)
+    # Standard Margin: Profit / Sales Proceed
+    df["Profit In Percentage"] = np.where(df["Sales Proceed"] != 0, (df["Profit"] * 100) / df["Sales Proceed"], 0)
     df["Profit In Percentage"] = df["Profit In Percentage"].round(2)
 
     df["With BackEnd Price"] = df["Our Cost"] - df["Support Amount"]
     df["With Support Purchase As Per Qty"] = df["With BackEnd Price"] * df["Quantity"]
     df["Profit With Support"] = df["Tranfered Price"] - df["With Support Purchase As Per Qty"]
-    df["Profit In Percentage With Support"] = np.where(df["With Support Purchase As Per Qty"] > 0,
-                                                     (df["Profit With Support"] * 100) / df["With Support Purchase As Per Qty"],
-                                                     np.nan)
+    # Standard Margin With Support: Profit With Support / Sales Proceed
+    df["Profit In Percentage With Support"] = np.where(df["Sales Proceed"] != 0,
+                                                     (df["Profit With Support"] * 100) / df["Sales Proceed"],
+                                                     0)
     df["Profit In Percentage With Support"] = df["Profit In Percentage With Support"].round(2)
 
     df["3% On Tranfered Price"] = (df["Tranfered Price"] * 0.03).round(2)
@@ -165,6 +186,10 @@ if transaction_file and pm_file:
         # normalize SKUs
         df[sku_col_df] = df[sku_col_df].apply(clean_sku_val)
         pm[sku_col_pm] = pm[sku_col_pm].apply(clean_sku_val)
+        
+        # Remove blank SKUs
+        df = df[df[sku_col_df] != ""].copy()
+        pm = pm[pm[sku_col_pm] != ""].copy()
 
         # detect PM columns
         purchase_member_col = find_col_by_names(pm.columns, ['purchase member name', 'purchase member', 'member'])
@@ -247,19 +272,28 @@ if transaction_file and pm_file:
 
         df_order = df_order[df_order[product_sales_col].fillna(0) != 0].copy()
         df_order = df_order.rename(columns={sku_col_df: 'SKU__'})
-        df_order['SKU__'] = df_order['SKU__'].apply(clean_sku_val)
+        df_order['SKU__'] = df_order['SKU__'].astype(str).apply(clean_sku_val)
+        # Final filter for blank SKU__
+        df_order = df_order[df_order['SKU__'] != ""].copy()
 
         merged = df_order.merge(pm_subset, how='left', left_on='SKU__', right_on=sku_col_pm, suffixes=('', '_pm'))
 
+        # Check for missing SKUs
+        missing_skus = merged[merged[our_cost_col].isna()]['SKU__'].unique() if our_cost_col in merged.columns else []
+        
         # rename columns to stable names
         if purchase_member_col is not None:
             merged.rename(columns={purchase_member_col: 'Purchase Member Name'}, inplace=True)
+            merged['Purchase Member Name'] = merged['Purchase Member Name'].fillna("SKU MISSING IN PM")
         if product_name_col is not None:
             merged.rename(columns={product_name_col: 'Product Name'}, inplace=True)
+            merged['Product Name'] = merged['Product Name'].fillna("SKU MISSING IN PM")
         if our_cost_col is not None:
             merged.rename(columns={our_cost_col: 'Our Cost'}, inplace=True)
+            merged['Our Cost'] = merged['Our Cost'].fillna(0)
         if support_amount_col is not None:
             merged.rename(columns={support_amount_col: 'Support Amount'}, inplace=True)
+            merged['Support Amount'] = merged['Support Amount'].fillna(0)
 
         if total_col in merged.columns:
             merged[total_col] = merged[total_col].astype(str).str.replace(",", "", regex=False)
@@ -319,6 +353,15 @@ if transaction_file and pm_file:
         available_cols = [c for c in final_columns if c in final_df.columns]
         final_df = final_df[available_cols].copy()
         final_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+        # ----------------- Mapping Validation UI -----------------
+        if len(missing_skus) > 0:
+            st.warning(f"⚠️ {len(missing_skus)} SKUs found in transactions are MISSING from Purchase Master. These will have 0 cost/profit.")
+            with st.expander("View Missing SKUs"):
+                st.write("The following SKUs need to be added to your Purchase Master file:")
+                st.dataframe(pd.DataFrame({'Missing SKU': missing_skus}), use_container_width=True)
+        else:
+            st.success("✅ All transaction SKUs matched with Purchase Master.")
 
         # Store original name for download buttons
         orig_name = getattr(transaction_file, "name", "transactions.csv")
@@ -389,22 +432,16 @@ if transaction_file and pm_file:
 
         def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currency_symbol='₹'):
             df_write = df.copy()
-            for col in df_write.columns:
-                df_write[col] = df_write[col].apply(lambda x: str(x) if isinstance(x, (pd.Timestamp, __import__('datetime').datetime)) else x)
+            # Ensure columns are numeric for summing
+            num_cols = ["Sales Proceed", "Tranfered Price", "Profit", "Profit With Support", 
+                        "After 3% Profit", "Our Cost As Per Qty", "Support Amount", 
+                        "With Support Purchase As Per Qty", "Quantity"]
+            for col in num_cols:
+                if col in df_write.columns:
+                    df_write[col] = clean_numeric(df_write[col])
 
             sku_cols = [c for c in df_write.columns if c.lower().strip() == "sku" or 'sku' in c.lower()]
-            for c in sku_cols:
-                df_write[c] = df_write[c].astype(str).fillna('')
-
-            # Columns that should NOT be converted to numeric (text/ID columns)
             text_cols = sku_cols + [c for c in df_write.columns if any(x in c.lower() for x in ['order id', 'order_id', 'item id', 'settlement', 'description', 'ordered on', 'date', 'name', 'member'])]
-            
-            for col in df_write.columns:
-                if col in text_cols:
-                    continue
-                sample = df_write[col].astype(str).str.replace(",", "", regex=False).replace('', np.nan).dropna()
-                if sample.size > 0 and (sample.str.match(r'^[\-\d\.\(\), ]+$').sum() / sample.size) > 0.6:
-                    df_write[col] = pd.to_numeric(df_write[col].astype(str).str.replace(",", "", regex=False), errors='coerce')
 
             profit_cols = [c for c in [
                 "Profit",
@@ -486,11 +523,56 @@ if transaction_file and pm_file:
                 total_after3 = df_write.get('After 3% Profit', pd.Series([])).sum(skipna=True) if 'After 3% Profit' in df_write.columns else 0
                 total_qty = int(df_write.get('Quantity', pd.Series([0])).sum(skipna=True)) if 'Quantity' in df_write.columns else 0
                 unique_skus = df_write.get('SKU', pd.Series([])).nunique() if 'SKU' in df_write.columns else 0
+                
+                # New summary metrics
+                # Standard Margin: (Profit / Sales)
+                profit_in_percentage = (total_profit * 100 / total_sales) if total_sales != 0 else 0
+                total_support_amount = df_write.get('Support Amount', pd.Series([])).sum(skipna=True) if 'Support Amount' in df_write.columns else 0
+                total_with_support_purchase = df_write.get('With Support Purchase As Per Qty', pd.Series([])).sum(skipna=True) if 'With Support Purchase As Per Qty' in df_write.columns else 0
+                total_profit_with_support = df_write.get('Profit With Support', pd.Series([])).sum(skipna=True) if 'Profit With Support' in df_write.columns else 0
+                # Standard Margin With Support: (Profit With Support / Sales)
+                profit_in_pct_with_support = (total_profit_with_support * 100 / total_sales) if total_sales != 0 else 0
 
                 if 'Product Name' in df_write.columns and 'Profit' in df_write.columns:
-                    top_products = df_write.groupby('Product Name', dropna=True).agg({
-                        'Quantity': 'sum', 'Sales Proceed': 'sum', 'Profit': 'sum'
-                    }).round(2).sort_values('Profit', ascending=False).head(100).reset_index()
+                    agg_cols = {
+                        'Quantity': 'sum', 
+                        'Sales Proceed': 'sum', 
+                        'Profit': 'sum',
+                        'Support Amount': 'sum',
+                        'With Support Purchase As Per Qty': 'sum',
+                        'Profit With Support': 'sum',
+                        'After 3% Profit': 'sum',
+                        'Our Cost As Per Qty': 'sum'
+                    }
+                    # filter agg_cols to only those in df_write
+                    agg_map = {k: v for k, v in agg_cols.items() if k in df_write.columns}
+                    
+                    top_prod_raw = df_write.groupby('Product Name', dropna=True).agg(agg_map).reset_index()
+                    
+                    # Recalculate percentages after aggregation (Margin on Sales)
+                    if 'Profit' in top_prod_raw.columns and 'Sales Proceed' in top_prod_raw.columns:
+                        top_prod_raw['Profit In Percentage'] = np.where(
+                            top_prod_raw['Sales Proceed'] != 0,
+                            (top_prod_raw['Profit'] * 100) / top_prod_raw['Sales Proceed'],
+                            0
+                        )
+                    
+                    if 'Profit With Support' in top_prod_raw.columns and 'Sales Proceed' in top_prod_raw.columns:
+                        top_prod_raw['Profit In Percentage With Support'] = np.where(
+                            top_prod_raw['Sales Proceed'] != 0,
+                            (top_prod_raw['Profit With Support'] * 100) / top_prod_raw['Sales Proceed'],
+                            0
+                        )
+                    
+                    # Define final column order for the table
+                    final_top_cols = [
+                        'Product Name', 'Quantity', 'Sales Proceed', 'Profit', 
+                        'Profit In Percentage', 'Support Amount', 'With Support Purchase As Per Qty', 
+                        'Profit With Support', 'Profit In Percentage With Support', 'After 3% Profit'
+                    ]
+                    # Ensure columns exist in top_prod_raw
+                    available_top_cols = [c for c in final_top_cols if c in top_prod_raw.columns]
+                    top_products = top_prod_raw[available_top_cols].round(2).sort_values('Profit', ascending=False).head(100)
                 else:
                     top_products = pd.DataFrame()
 
@@ -501,16 +583,27 @@ if transaction_file and pm_file:
                     ("Total Rows", total_rows),
                     ("Total Sales", total_sales),
                     ("Total Profit", total_profit),
+                    ("Profit In Percentage", round(profit_in_percentage, 2)),
+                    ("Support Amount", total_support_amount),
+                    ("With Support Purchase As Per Qty", total_with_support_purchase),
+                    ("Profit With Support", total_profit_with_support),
+                    ("Profit In Percentage With Support", round(profit_in_pct_with_support, 2)),
                     ("After 3% Profit (Sum)", total_after3),
                     ("Total Quantity", total_qty),
                     ("Unique SKUs", unique_skus)
                 ]
                 r = 0
                 label_fmt = workbook.add_format({'bold': True})
+                pct_value_fmt = workbook.add_format({'num_format': '0.00"%"', 'border': 1})
                 for label, value in kv:
                     summary_ws.write(r, 0, label, label_fmt)
                     if isinstance(value, (int, np.integer)):
                         summary_ws.write(r, 1, int(value))
+                    elif 'Percentage' in label:
+                        try:
+                            summary_ws.write(r, 1, float(value), pct_value_fmt)
+                        except Exception:
+                            summary_ws.write(r, 1, value)
                     else:
                         try:
                             summary_ws.write(r, 1, float(value), currency_fmt)
@@ -531,8 +624,11 @@ if transaction_file and pm_file:
                         for cidx, cname in enumerate(top_products.columns):
                             val = row[cname]
                             if pd.api.types.is_number(val):
-                                if cname.lower() in ['sales proceed', 'sales', 'profit', 'after 3% profit']:
+                                lname = cname.lower()
+                                if any(x in lname for x in ['sales', 'profit', 'amount', 'purchase']):
                                     summary_ws.write(r + 1 + ridx, cidx, val, currency_fmt)
+                                elif 'percentage' in lname:
+                                    summary_ws.write(r + 1 + ridx, cidx, val, pct_value_fmt)
                                 else:
                                     summary_ws.write(r + 1 + ridx, cidx, val)
                             else:
@@ -562,9 +658,41 @@ if transaction_file and pm_file:
         st.markdown("---")
         st.header("Profit by Product (Table)")
         if 'Product Name' in final_df.columns:
-            profit_by_product_table = final_df.groupby('Product Name').agg({
-                'Quantity':'sum','Sales Proceed':'sum','Profit':'sum','After 3% Profit':'sum'
-            }).round(2).sort_values('Profit', ascending=False)
+            agg_cols_ui = {
+                'Quantity': 'sum', 
+                'Sales Proceed': 'sum', 
+                'Profit': 'sum',
+                'Support Amount': 'sum',
+                'With Support Purchase As Per Qty': 'sum',
+                'Profit With Support': 'sum',
+                'After 3% Profit': 'sum',
+                'Our Cost As Per Qty': 'sum'
+            }
+            agg_map_ui = {k: v for k, v in agg_cols_ui.items() if k in final_df.columns}
+            
+            prod_table_raw = final_df.groupby('Product Name').agg(agg_map_ui).reset_index()
+            
+            if 'Profit' in prod_table_raw.columns and 'Sales Proceed' in prod_table_raw.columns:
+                prod_table_raw['Profit In Percentage'] = np.where(
+                    prod_table_raw['Sales Proceed'] != 0,
+                    (prod_table_raw['Profit'] * 100) / prod_table_raw['Sales Proceed'],
+                    0
+                )
+            
+            if 'Profit With Support' in prod_table_raw.columns and 'Sales Proceed' in prod_table_raw.columns:
+                prod_table_raw['Profit In Percentage With Support'] = np.where(
+                    prod_table_raw['Sales Proceed'] != 0,
+                    (prod_table_raw['Profit With Support'] * 100) / prod_table_raw['Sales Proceed'],
+                    0
+                )
+            
+            final_ui_cols = [
+                'Product Name', 'Quantity', 'Sales Proceed', 'Profit', 
+                'Profit In Percentage', 'Support Amount', 'With Support Purchase As Per Qty', 
+                'Profit With Support', 'Profit In Percentage With Support', 'After 3% Profit'
+            ]
+            available_ui_cols = [c for c in final_ui_cols if c in prod_table_raw.columns]
+            profit_by_product_table = prod_table_raw[available_ui_cols].round(2).sort_values('Profit', ascending=False)
             st.dataframe(profit_by_product_table, use_container_width=True)
 
     except Exception as e:
