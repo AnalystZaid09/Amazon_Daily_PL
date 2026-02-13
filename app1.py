@@ -43,16 +43,25 @@ def clean_numeric(series):
 def clean_sku_val(x):
     if pd.isna(x):
         return ""
+    # Convert to string and strip all forms of whitespace
     s = str(x).strip()
+    # Remove non-printable characters
     s = "".join(ch for ch in s if ord(ch) > 31)
+    
+    # Handle numeric SKUs that might have been read as floats (e.g., "123.0")
     try:
-        if '.' in s:
+        # Check if it's a numeric string
+        if s.replace('.', '', 1).isdigit():
             f = float(s)
             if f.is_integer():
                 s = str(int(f))
+            else:
+                s = str(f)
     except Exception:
         pass
-    return s.upper()
+        
+    # Standardize formatting
+    return s.upper().strip()
 
 
 def find_col_by_names(df_cols, candidates):
@@ -176,7 +185,7 @@ if transaction_file and pm_file:
             raise ValueError("Couldn't detect SKU column in transaction CSV. Expected column like 'Sku' or 'Seller SKU'.")
 
         # PM SKU detection
-        possible_pm_sku_names = ['sku', 'seller sku', 'amazon sku', 'product sku', 'sku id']
+        possible_pm_sku_names = ['Amazon Sku Name', 'EasycomSKU', 'Vendor SKU Codes', 'sku', 'seller sku', 'amazon sku', 'product sku', 'sku id']
         sku_col_pm = find_col_by_names(pm.columns, possible_pm_sku_names)
         if sku_col_pm is None and len(pm.columns) >= 3:
             sku_col_pm = pm.columns[2]
@@ -278,8 +287,8 @@ if transaction_file and pm_file:
 
         merged = df_order.merge(pm_subset, how='left', left_on='SKU__', right_on=sku_col_pm, suffixes=('', '_pm'))
 
-        # Check for missing SKUs
-        missing_skus = merged[merged[our_cost_col].isna()]['SKU__'].unique() if our_cost_col in merged.columns else []
+        # Check for missing SKUs (SKU not found in PM at all)
+        missing_skus = merged[merged[sku_col_pm].isna()]['SKU__'].unique() if sku_col_pm in merged.columns else []
         
         # rename columns to stable names
         if purchase_member_col is not None:
