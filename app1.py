@@ -205,7 +205,8 @@ if transaction_file and pm_file:
         product_name_col     = find_col_by_names(pm.columns, ['brand','product name','brand name'])
         our_cost_col         = find_col_by_names(pm.columns, ['our cost', 'cost', 'unit cost', 'purchase price'])
         support_amount_col   = find_col_by_names(pm.columns, ['support amount', 'support', 'support price'])
-
+        asin_col = find_col_by_names(pm.columns, ['asin', 'amazon asin', 'product asin'])
+        
         # fallbacks by index (same as original heuristics)
         try:
             if purchase_member_col is None and len(pm.columns) >= 5:
@@ -220,7 +221,7 @@ if transaction_file and pm_file:
             pass
 
         pm_merge_cols = [sku_col_pm]
-        for c in [purchase_member_col, product_name_col, our_cost_col, support_amount_col]:
+        for c in [purchase_member_col, product_name_col, our_cost_col, support_amount_col, asin_col]:            
             if c is not None:
                 pm_merge_cols.append(c)
 
@@ -303,7 +304,9 @@ if transaction_file and pm_file:
         if support_amount_col is not None:
             merged.rename(columns={support_amount_col: 'Support Amount'}, inplace=True)
             merged['Support Amount'] = merged['Support Amount'].fillna(0)
-
+        if asin_col is not None:
+            merged.rename(columns={asin_col: 'ASIN'}, inplace=True)
+            merged['ASIN'] = merged['ASIN'].fillna("ASIN MISSING IN PM")
         if total_col in merged.columns:
             merged[total_col] = merged[total_col].astype(str).str.replace(",", "", regex=False)
             merged[total_col] = pd.to_numeric(merged[total_col], errors='coerce')
@@ -351,7 +354,7 @@ if transaction_file and pm_file:
 
         final_columns = [
             "Ordered On", "ORDER ITEM ID", "Purchase Member Name", "Order Id",
-            "Product Name", "Description", "Quantity", "SKU", "Sales Proceed",
+            "Product Name", "Description", "Quantity", "SKU", "ASIN", "Sales Proceed",
             "Amazon Total Fees", "Amazon Fees In %", "Tranfered Price",
             "Our Cost", "Our Cost As Per Qty", "Profit", "Profit In Percentage",
             "Support Amount", "With BackEnd Price", "With Support Purchase As Per Qty",
@@ -449,7 +452,7 @@ if transaction_file and pm_file:
                 if col in df_write.columns:
                     df_write[col] = clean_numeric(df_write[col])
 
-            sku_cols = [c for c in df_write.columns if c.lower().strip() == "sku" or 'sku' in c.lower()]
+            sku_cols = [c for c in df_write.columns if c.lower().strip() in ["sku", "asin"] or 'sku' in c.lower()]            
             text_cols = sku_cols + [c for c in df_write.columns if any(x in c.lower() for x in ['order id', 'order_id', 'item id', 'settlement', 'description', 'ordered on', 'date', 'name', 'member'])]
 
             profit_cols = [c for c in [
