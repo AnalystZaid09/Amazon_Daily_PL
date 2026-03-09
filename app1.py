@@ -220,18 +220,23 @@ if transaction_file and pm_file:
         except Exception:
             pass
 
-        pm_merge_cols = [sku_col_pm]
-        for c in [purchase_member_col, product_name_col, our_cost_col, support_amount_col, asin_col]:            
-            if c is not None:
-                pm_merge_cols.append(c)
-
-        pm_subset = pm[pm_merge_cols].copy()
+        # 1. Create SKU-to-ASIN mapping
+        if asin_col is None:
+            raise ValueError("Couldn't detect ASIN column in PM file. ASIN mapping is required by system logic.")
+        
+        sku_to_asin_df = pm[[sku_col_pm, asin_col]].dropna(subset=[sku_col_pm, asin_col]).drop_duplicates()
+        
+        # 2. Create ASIN-to-Details mapping
+        pm_detail_cols_available = [c for c in [purchase_member_col, product_name_col, our_cost_col, support_amount_col] if c is not None]
+        asin_to_details_df = pm[[asin_col] + pm_detail_cols_available].dropna(subset=[asin_col]).drop_duplicates(subset=[asin_col])
+        
+        # Clean numeric cols in details map
         if our_cost_col is not None:
-            pm_subset[our_cost_col] = pm_subset[our_cost_col].astype(str).str.replace(",", "", regex=False)
-            pm_subset[our_cost_col] = pd.to_numeric(pm_subset[our_cost_col], errors='coerce')
+            asin_to_details_df[our_cost_col] = asin_to_details_df[our_cost_col].astype(str).str.replace(",", "", regex=False)
+            asin_to_details_df[our_cost_col] = pd.to_numeric(asin_to_details_df[our_cost_col], errors='coerce')
         if support_amount_col is not None:
-            pm_subset[support_amount_col] = pm_subset[support_amount_col].astype(str).str.replace(",", "", regex=False)
-            pm_subset[support_amount_col] = pd.to_numeric(pm_subset[support_amount_col], errors='coerce')
+            asin_to_details_df[support_amount_col] = asin_to_details_df[support_amount_col].astype(str).str.replace(",", "", regex=False)
+            asin_to_details_df[support_amount_col] = pd.to_numeric(asin_to_details_df[support_amount_col], errors='coerce')
 
         # filter only orders
         if 'type' not in [c.lower() for c in df.columns]:
@@ -286,18 +291,23 @@ if transaction_file and pm_file:
         # Final filter for blank SKU__
         df_order = df_order[df_order['SKU__'] != ""].copy()
 
-        merged = df_order.merge(pm_subset, how='left', left_on='SKU__', right_on=sku_col_pm, suffixes=('', '_pm'))
+        # Double Mapping: Transaction SKU -> ASIN (from PM) -> Product Details (from PM)
+        # Step A: Mapping SKU to get ASIN
+        merged = df_order.merge(sku_to_asin_df, how='left', left_on='SKU__', right_on=sku_col_pm)
+        
+        # Step B: Mapping ASIN to get all other details (Member, Product Name, Costs)
+        merged = merged.merge(asin_to_details_df, how='left', on=asin_col, suffixes=('', '_redundant'))
 
-        # Check for missing SKUs (SKU not found in PM at all)
+        # Check for missing SKUs (SKU not found in mapping at all)
         missing_skus = merged[merged[sku_col_pm].isna()]['SKU__'].unique() if sku_col_pm in merged.columns else []
         
         # rename columns to stable names
         if purchase_member_col is not None:
             merged.rename(columns={purchase_member_col: 'Purchase Member Name'}, inplace=True)
-            merged['Purchase Member Name'] = merged['Purchase Member Name'].fillna("SKU MISSING IN PM")
+            merged['Purchase Member Name'] = merged['Purchase Member Name'].fillna("SKU/ASIN MISSING IN PM")
         if product_name_col is not None:
             merged.rename(columns={product_name_col: 'Product Name'}, inplace=True)
-            merged['Product Name'] = merged['Product Name'].fillna("SKU MISSING IN PM")
+            merged['Product Name'] = merged['Product Name'].fillna("SKU/ASIN MISSING IN PM")
         if our_cost_col is not None:
             merged.rename(columns={our_cost_col: 'Our Cost'}, inplace=True)
             merged['Our Cost'] = merged['Our Cost'].fillna(0)
