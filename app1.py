@@ -115,14 +115,230 @@ def compute_financials(df):
                                          ((df["After 3% Profit"] / df["With Support Purchase As Per Qty"]) * 100),
                                          np.nan)
     df["After 3% Percentage"] = df["After 3% Percentage"].round(0)
-
-    for colr in ["Sales Proceed", "Amazon Total Fees", "Tranfered Price", "Our Cost As Per Qty",
-                 "Profit", "Profit With Support", "After 3% Profit"]:
-        if colr in df.columns:
-            df[colr] = pd.to_numeric(df[colr], errors='coerce').round(2)
-
+    
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     return df
+
+
+# ---------- Excel Styling Helpers ----------
+
+def _xl_col_letter(n):
+    s = ''
+    while n >= 0:
+        s = chr(n % 26 + 65) + s
+        n = n // 26 - 1
+    return s
+
+def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currency_symbol='₹', include_summary=True):
+    df_write = df.copy()
+    # Ensure columns are numeric for summing and formatting
+    # Added pivot-specific column names to the search list
+    num_cols = ["Sales Proceed", "Tranfered Price", "Profit", "Profit With Support", 
+                "After 3% Profit", "Our Cost As Per Qty", "Support Amount", 
+                "With Support Purchase As Per Qty", "Quantity", "Qty", "Transferred Price"]
+    for col in num_cols:
+        if col in df_write.columns:
+            df_write[col] = clean_numeric(df_write[col])
+
+    sku_cols = [c for c in df_write.columns if c.lower().strip() in ["sku", "asin", "sku id"] or 'sku' in c.lower()]            
+    text_cols = sku_cols + [c for c in df_write.columns if any(x in c.lower() for x in ['order id', 'order_id', 'item id', 'settlement', 'description', 'ordered on', 'date', 'name', 'member'])]
+
+    profit_cols = [c for c in [
+        "Profit",
+        "Profit In Percentage",
+        "Profit With Support",
+        "Profit In Percentage With Support",
+        "After 3% Profit",
+        "After 3% Percentage"
+    ] if c in df_write.columns]
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        workbook = writer.book
+
+        sheet_name = "Data"
+        df_write.to_excel(writer, index=False, sheet_name=sheet_name, startrow=0, header=True)
+        worksheet = writer.sheets[sheet_name]
+
+        header_format = workbook.add_format({
+            'bold': True, 'text_wrap': True, 'valign': 'vcenter',
+            'fg_color': header_hex, 'font_color': '#FFFFFF', 'border': 1
+        })
+        currency_fmt = workbook.add_format({'num_format': f'"{currency_symbol}"#,##0.00', 'border': 1})
+        integer_fmt = workbook.add_format({'num_format': '0', 'border': 1})
+        pct_fmt = workbook.add_format({'num_format': '0.00"%";-0.00"%"', 'border': 1})
+        default_fmt = workbook.add_format({'border': 1})
+        sku_fmt = workbook.add_format({'num_format': '@', 'border': 1})
+
+        for col_num, col_name in enumerate(df_write.columns):
+            worksheet.write(0, col_num, col_name, header_format)
+            try:
+                max_len = max(
+                    df_write[col_name].astype(str).map(len).max() if df_write[col_name].size > 0 else 0,
+                    len(str(col_name))
+                ) + 2
+            except Exception:
+                max_len = len(str(col_name)) + 2
+            max_len = min(max_len, 60)
+            worksheet.set_column(col_num, col_num, max_len)
+
+        worksheet.freeze_panes(1, 0)
+        worksheet.autofilter(0, 0, len(df_write), len(df_write.columns) - 1)
+
+        for col_idx, col_name in enumerate(df_write.columns):
+            series = df_write[col_name]
+            if col_name in sku_cols:
+                worksheet.set_column(col_idx, col_idx, None, sku_fmt)
+            elif pd.api.types.is_integer_dtype(series) or (pd.api.types.is_float_dtype(series) and all(series.dropna().apply(float).apply(float.is_integer)) if series.dropna().size>0 else False):
+                worksheet.set_column(col_idx, col_idx, None, integer_fmt)
+            elif pd.api.types.is_float_dtype(series) or pd.api.types.is_numeric_dtype(series):
+                lname = col_name.lower()
+                # Handle specific names for pivot support
+                if any(k in lname for k in ['sales', 'profit', 'cost', 'price', 'fees', 'amount', 'tranfered', 'after 3%', 'transferred price']):
+                    worksheet.set_column(col_idx, col_idx, None, currency_fmt)
+                elif 'percentage' in lname or '%' in col_name or 'pct' in lname:
+                    worksheet.set_column(col_idx, col_idx, None, pct_fmt)
+                else:
+                    worksheet.set_column(col_idx, col_idx, None, default_fmt)
+            else:
+                worksheet.set_column(col_idx, col_idx, None, default_fmt)
+
+        pos_format = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
+        neg_format = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
+        for pcol in profit_cols:
+            try:
+                col_idx = list(df_write.columns).index(pcol)
+                col_letter = _xl_col_letter(col_idx)
+                first_row = 2
+                last_row = len(df_write) + 1
+                cell_range = f'{col_letter}{first_row}:{col_letter}{last_row}'
+                worksheet.conditional_format(cell_range, {'type': 'cell', 'criteria': '>=', 'value': 0, 'format': pos_format})
+                worksheet.conditional_format(cell_range, {'type': 'cell', 'criteria': '<',  'value': 0, 'format': neg_format})
+            except Exception:
+                pass
+
+        if include_summary:
+            summary_name = "Summary"
+            total_rows = len(df_write)
+            total_sales = df_write.get('Sales Proceed', pd.Series([])).sum(skipna=True) if 'Sales Proceed' in df_write.columns else 0
+            total_profit = df_write.get('Profit', pd.Series([])).sum(skipna=True) if 'Profit' in df_write.columns else 0
+            total_after3 = df_write.get('After 3% Profit', pd.Series([])).sum(skipna=True) if 'After 3% Profit' in df_write.columns else 0
+            total_qty = int(df_write.get('Quantity', pd.Series([0])).sum(skipna=True)) if 'Quantity' in df_write.columns else 0
+            unique_skus = df_write.get('SKU', pd.Series([])).nunique() if 'SKU' in df_write.columns else 0
+            
+            # New summary metrics
+            # Standard Margin: (Profit / Sales)
+            profit_in_percentage = (total_profit * 100 / total_sales) if total_sales != 0 else 0
+            total_support_amount = df_write.get('Support Amount', pd.Series([])).sum(skipna=True) if 'Support Amount' in df_write.columns else 0
+            total_with_support_purchase = df_write.get('With Support Purchase As Per Qty', pd.Series([])).sum(skipna=True) if 'With Support Purchase As Per Qty' in df_write.columns else 0
+            total_profit_with_support = df_write.get('Profit With Support', pd.Series([])).sum(skipna=True) if 'Profit With Support' in df_write.columns else 0
+            # Standard Margin With Support: (Profit With Support / Sales)
+            profit_in_pct_with_support = (total_profit_with_support * 100 / total_sales) if total_sales != 0 else 0
+
+            if 'Product Name' in df_write.columns and 'Profit' in df_write.columns:
+                agg_cols = {
+                    'Quantity': 'sum', 
+                    'Sales Proceed': 'sum', 
+                    'Profit': 'sum',
+                    'Support Amount': 'sum',
+                    'With Support Purchase As Per Qty': 'sum',
+                    'Profit With Support': 'sum',
+                    'After 3% Profit': 'sum',
+                    'Our Cost As Per Qty': 'sum'
+                }
+                # filter agg_cols to only those in df_write
+                agg_map = {k: v for k, v in agg_cols.items() if k in df_write.columns}
+                
+                top_prod_raw = df_write.groupby('Product Name', dropna=True).agg(agg_map).reset_index()
+                
+                # Recalculate percentages after aggregation (Margin on Sales)
+                if 'Profit' in top_prod_raw.columns and 'Sales Proceed' in top_prod_raw.columns:
+                    top_prod_raw['Profit In Percentage'] = np.where(
+                        top_prod_raw['Sales Proceed'] != 0,
+                        (top_prod_raw['Profit'] * 100) / top_prod_raw['Sales Proceed'],
+                        0
+                    )
+                
+                if 'Profit With Support' in top_prod_raw.columns and 'Sales Proceed' in top_prod_raw.columns:
+                    top_prod_raw['Profit In Percentage With Support'] = np.where(
+                        top_prod_raw['Sales Proceed'] != 0,
+                        (top_prod_raw['Profit With Support'] * 100) / top_prod_raw['Sales Proceed'],
+                        0
+                    )
+                
+                # Define final column order for the table
+                final_top_cols = [
+                    'Product Name', 'Quantity', 'Sales Proceed', 'Profit', 
+                    'Profit In Percentage', 'Support Amount', 'With Support Purchase As Per Qty', 
+                    'Profit With Support', 'Profit In Percentage With Support', 'After 3% Profit'
+                ]
+                # Ensure columns exist in top_prod_raw
+                available_top_cols = [c for c in final_top_cols if c in top_prod_raw.columns]
+                top_products = top_prod_raw[available_top_cols].round(2).sort_values('Profit', ascending=False).head(100)
+            else:
+                top_products = pd.DataFrame()
+
+            summary_ws = workbook.add_worksheet(summary_name)
+
+            kv = [
+                ("Total Rows", total_rows),
+                ("Total Sales", total_sales),
+                ("Total Profit", total_profit),
+                ("Profit In Percentage", round(profit_in_percentage, 2)),
+                ("Support Amount", total_support_amount),
+                ("With Support Purchase As Per Qty", total_with_support_purchase),
+                ("Profit With Support", total_profit_with_support),
+                ("Profit In Percentage With Support", round(profit_in_pct_with_support, 2)),
+                ("After 3% Profit (Sum)", total_after3),
+                ("Total Quantity", total_qty),
+                ("Unique SKUs", unique_skus)
+            ]
+            r = 0
+            label_fmt = workbook.add_format({'bold': True})
+            pct_value_fmt = workbook.add_format({'num_format': '0.00"%"', 'border': 1})
+            for label, value in kv:
+                summary_ws.write(r, 0, label, label_fmt)
+                if isinstance(value, (int, np.integer)):
+                    summary_ws.write(r, 1, int(value))
+                elif 'Percentage' in label:
+                    try:
+                        summary_ws.write(r, 1, float(value), pct_value_fmt)
+                    except Exception:
+                        summary_ws.write(r, 1, value)
+                else:
+                    try:
+                        summary_ws.write(r, 1, float(value), currency_fmt)
+                    except Exception:
+                        summary_ws.write(r, 1, value)
+                r += 1
+
+            r += 1
+            if not top_products.empty:
+                for cidx, cname in enumerate(top_products.columns):
+                    summary_ws.write(r, cidx, cname, header_format)
+                    try:
+                        max_len = max(top_products[cname].astype(str).map(len).max(), len(cname)) + 2
+                    except Exception:
+                        max_len = len(cname) + 2
+                    summary_ws.set_column(cidx, cidx, min(max_len, 60))
+                for ridx, row in top_products.iterrows():
+                    for cidx, cname in enumerate(top_products.columns):
+                        val = row[cname]
+                        if pd.api.types.is_number(val):
+                            lname = cname.lower()
+                            if any(x in lname for x in ['sales', 'profit', 'amount', 'purchase']):
+                                summary_ws.write(r + 1 + ridx, cidx, val, currency_fmt)
+                            elif 'percentage' in lname:
+                                summary_ws.write(r + 1 + ridx, cidx, val, pct_value_fmt)
+                            else:
+                                summary_ws.write(r + 1 + ridx, cidx, val)
+                        else:
+                            summary_ws.write(r + 1 + ridx, cidx, val)
+            else:
+                summary_ws.write(r, 0, "No Product Name / Profit columns to show top product table.", default_fmt)
+
+    output.seek(0)
+    return output.read()
 
 
 # ----------------- Uploads / Options (CENTER, not sidebar) -----------------
@@ -505,6 +721,21 @@ if transaction_file and pm_file:
             pivot_csv_bytes = pivot_table.to_csv(index=False).encode('utf-8')
             st.download_button("Download Pivot Table CSV", data=pivot_csv_bytes, file_name="pivot_summary.csv", mime='text/csv')
 
+            if enable_excel_export:
+                if st.button("Create styled Excel for Pivot Table"):
+                    try:
+                        # For pivot table, we disable the auto-summary sheet as the table itself is a summary
+                        pivot_xlsx = create_styled_workbook_bytes(pivot_table, header_hex="#0B5394", currency_symbol='₹', include_summary=False)
+                        st.download_button(
+                            label="📥 Download Styled Pivot Excel (.xlsx)",
+                            data=pivot_xlsx,
+                            file_name="pivot_summary_styled.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                        st.success("Styled Pivot Excel ready.")
+                    except Exception as e:
+                        st.error(f"Failed to build styled pivot Excel: {e}")
+
         st.markdown("---")
         st.header("Processed Data (Filtered)")
         # Hide internal pivot helper columns from UI and CSV download
@@ -514,223 +745,6 @@ if transaction_file and pm_file:
 
         csv_bytes = display_raw.to_csv(index=False).encode('utf-8')
         st.download_button("Download Filtered CSV", data=csv_bytes, file_name=f"{os.path.splitext(orig_name)[0]}_filtered.csv", mime='text/csv')
-
-        # ---------- Styled Excel builder (exports FILTERED dataframe) ----------
-        def _xl_col_letter(n):
-            s = ''
-            while n >= 0:
-                s = chr(n % 26 + 65) + s
-                n = n // 26 - 1
-            return s
-
-        def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currency_symbol='₹'):
-            df_write = df.copy()
-            # Ensure columns are numeric for summing
-            num_cols = ["Sales Proceed", "Tranfered Price", "Profit", "Profit With Support", 
-                        "After 3% Profit", "Our Cost As Per Qty", "Support Amount", 
-                        "With Support Purchase As Per Qty", "Quantity"]
-            for col in num_cols:
-                if col in df_write.columns:
-                    df_write[col] = clean_numeric(df_write[col])
-
-            sku_cols = [c for c in df_write.columns if c.lower().strip() in ["sku", "asin"] or 'sku' in c.lower()]            
-            text_cols = sku_cols + [c for c in df_write.columns if any(x in c.lower() for x in ['order id', 'order_id', 'item id', 'settlement', 'description', 'ordered on', 'date', 'name', 'member'])]
-
-            profit_cols = [c for c in [
-                "Profit",
-                "Profit In Percentage",
-                "Profit With Support",
-                "Profit In Percentage With Support",
-                "After 3% Profit",
-                "After 3% Percentage"
-            ] if c in df_write.columns]
-
-            output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                workbook = writer.book
-
-                sheet_name = "Data"
-                df_write.to_excel(writer, index=False, sheet_name=sheet_name, startrow=0, header=True)
-                worksheet = writer.sheets[sheet_name]
-
-                header_format = workbook.add_format({
-                    'bold': True, 'text_wrap': True, 'valign': 'vcenter',
-                    'fg_color': header_hex, 'font_color': '#FFFFFF', 'border': 1
-                })
-                currency_fmt = workbook.add_format({'num_format': f'"{currency_symbol}"#,##0.00', 'border': 1})
-                integer_fmt = workbook.add_format({'num_format': '0', 'border': 1})
-                pct_fmt = workbook.add_format({'num_format': '0.00"%";-0.00"%"', 'border': 1})
-                default_fmt = workbook.add_format({'border': 1})
-                sku_fmt = workbook.add_format({'num_format': '@', 'border': 1})
-
-                for col_num, col_name in enumerate(df_write.columns):
-                    worksheet.write(0, col_num, col_name, header_format)
-                    try:
-                        max_len = max(
-                            df_write[col_name].astype(str).map(len).max() if df_write[col_name].size > 0 else 0,
-                            len(str(col_name))
-                        ) + 2
-                    except Exception:
-                        max_len = len(str(col_name)) + 2
-                    max_len = min(max_len, 60)
-                    worksheet.set_column(col_num, col_num, max_len)
-
-                worksheet.freeze_panes(1, 0)
-                worksheet.autofilter(0, 0, len(df_write), len(df_write.columns) - 1)
-
-                for col_idx, col_name in enumerate(df_write.columns):
-                    series = df_write[col_name]
-                    if col_name in sku_cols:
-                        worksheet.set_column(col_idx, col_idx, None, sku_fmt)
-                    elif pd.api.types.is_integer_dtype(series) or (pd.api.types.is_float_dtype(series) and all(series.dropna().apply(float).apply(float.is_integer)) if series.dropna().size>0 else False):
-                        worksheet.set_column(col_idx, col_idx, None, integer_fmt)
-                    elif pd.api.types.is_float_dtype(series) or pd.api.types.is_integer_dtype(series):
-                        lname = col_name.lower()
-                        if any(k in lname for k in ['sales', 'profit', 'cost', 'price', 'fees', 'amount', 'tranfered', 'after 3%']):
-                            worksheet.set_column(col_idx, col_idx, None, currency_fmt)
-                        elif 'percentage' in lname or '%' in col_name or 'pct' in lname:
-                            worksheet.set_column(col_idx, col_idx, None, pct_fmt)
-                        else:
-                            worksheet.set_column(col_idx, col_idx, None, default_fmt)
-                    else:
-                        worksheet.set_column(col_idx, col_idx, None, default_fmt)
-
-                pos_format = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
-                neg_format = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
-                for pcol in profit_cols:
-                    try:
-                        col_idx = list(df_write.columns).index(pcol)
-                        col_letter = _xl_col_letter(col_idx)
-                        first_row = 2
-                        last_row = len(df_write) + 1
-                        cell_range = f'{col_letter}{first_row}:{col_letter}{last_row}'
-                        worksheet.conditional_format(cell_range, {'type': 'cell', 'criteria': '>=', 'value': 0, 'format': pos_format})
-                        worksheet.conditional_format(cell_range, {'type': 'cell', 'criteria': '<',  'value': 0, 'format': neg_format})
-                    except Exception:
-                        pass
-
-                summary_name = "Summary"
-                total_rows = len(df_write)
-                total_sales = df_write.get('Sales Proceed', pd.Series([])).sum(skipna=True) if 'Sales Proceed' in df_write.columns else 0
-                total_profit = df_write.get('Profit', pd.Series([])).sum(skipna=True) if 'Profit' in df_write.columns else 0
-                total_after3 = df_write.get('After 3% Profit', pd.Series([])).sum(skipna=True) if 'After 3% Profit' in df_write.columns else 0
-                total_qty = int(df_write.get('Quantity', pd.Series([0])).sum(skipna=True)) if 'Quantity' in df_write.columns else 0
-                unique_skus = df_write.get('SKU', pd.Series([])).nunique() if 'SKU' in df_write.columns else 0
-                
-                # New summary metrics
-                # Standard Margin: (Profit / Sales)
-                profit_in_percentage = (total_profit * 100 / total_sales) if total_sales != 0 else 0
-                total_support_amount = df_write.get('Support Amount', pd.Series([])).sum(skipna=True) if 'Support Amount' in df_write.columns else 0
-                total_with_support_purchase = df_write.get('With Support Purchase As Per Qty', pd.Series([])).sum(skipna=True) if 'With Support Purchase As Per Qty' in df_write.columns else 0
-                total_profit_with_support = df_write.get('Profit With Support', pd.Series([])).sum(skipna=True) if 'Profit With Support' in df_write.columns else 0
-                # Standard Margin With Support: (Profit With Support / Sales)
-                profit_in_pct_with_support = (total_profit_with_support * 100 / total_sales) if total_sales != 0 else 0
-
-                if 'Product Name' in df_write.columns and 'Profit' in df_write.columns:
-                    agg_cols = {
-                        'Quantity': 'sum', 
-                        'Sales Proceed': 'sum', 
-                        'Profit': 'sum',
-                        'Support Amount': 'sum',
-                        'With Support Purchase As Per Qty': 'sum',
-                        'Profit With Support': 'sum',
-                        'After 3% Profit': 'sum',
-                        'Our Cost As Per Qty': 'sum'
-                    }
-                    # filter agg_cols to only those in df_write
-                    agg_map = {k: v for k, v in agg_cols.items() if k in df_write.columns}
-                    
-                    top_prod_raw = df_write.groupby('Product Name', dropna=True).agg(agg_map).reset_index()
-                    
-                    # Recalculate percentages after aggregation (Margin on Sales)
-                    if 'Profit' in top_prod_raw.columns and 'Sales Proceed' in top_prod_raw.columns:
-                        top_prod_raw['Profit In Percentage'] = np.where(
-                            top_prod_raw['Sales Proceed'] != 0,
-                            (top_prod_raw['Profit'] * 100) / top_prod_raw['Sales Proceed'],
-                            0
-                        )
-                    
-                    if 'Profit With Support' in top_prod_raw.columns and 'Sales Proceed' in top_prod_raw.columns:
-                        top_prod_raw['Profit In Percentage With Support'] = np.where(
-                            top_prod_raw['Sales Proceed'] != 0,
-                            (top_prod_raw['Profit With Support'] * 100) / top_prod_raw['Sales Proceed'],
-                            0
-                        )
-                    
-                    # Define final column order for the table
-                    final_top_cols = [
-                        'Product Name', 'Quantity', 'Sales Proceed', 'Profit', 
-                        'Profit In Percentage', 'Support Amount', 'With Support Purchase As Per Qty', 
-                        'Profit With Support', 'Profit In Percentage With Support', 'After 3% Profit'
-                    ]
-                    # Ensure columns exist in top_prod_raw
-                    available_top_cols = [c for c in final_top_cols if c in top_prod_raw.columns]
-                    top_products = top_prod_raw[available_top_cols].round(2).sort_values('Profit', ascending=False).head(100)
-                else:
-                    top_products = pd.DataFrame()
-
-                writer.book.add_worksheet(summary_name)
-                summary_ws = writer.sheets[summary_name]
-
-                kv = [
-                    ("Total Rows", total_rows),
-                    ("Total Sales", total_sales),
-                    ("Total Profit", total_profit),
-                    ("Profit In Percentage", round(profit_in_percentage, 2)),
-                    ("Support Amount", total_support_amount),
-                    ("With Support Purchase As Per Qty", total_with_support_purchase),
-                    ("Profit With Support", total_profit_with_support),
-                    ("Profit In Percentage With Support", round(profit_in_pct_with_support, 2)),
-                    ("After 3% Profit (Sum)", total_after3),
-                    ("Total Quantity", total_qty),
-                    ("Unique SKUs", unique_skus)
-                ]
-                r = 0
-                label_fmt = workbook.add_format({'bold': True})
-                pct_value_fmt = workbook.add_format({'num_format': '0.00"%"', 'border': 1})
-                for label, value in kv:
-                    summary_ws.write(r, 0, label, label_fmt)
-                    if isinstance(value, (int, np.integer)):
-                        summary_ws.write(r, 1, int(value))
-                    elif 'Percentage' in label:
-                        try:
-                            summary_ws.write(r, 1, float(value), pct_value_fmt)
-                        except Exception:
-                            summary_ws.write(r, 1, value)
-                    else:
-                        try:
-                            summary_ws.write(r, 1, float(value), currency_fmt)
-                        except Exception:
-                            summary_ws.write(r, 1, value)
-                    r += 1
-
-                r += 1
-                if not top_products.empty:
-                    for cidx, cname in enumerate(top_products.columns):
-                        summary_ws.write(r, cidx, cname, header_format)
-                        try:
-                            max_len = max(top_products[cname].astype(str).map(len).max(), len(cname)) + 2
-                        except Exception:
-                            max_len = len(cname) + 2
-                        summary_ws.set_column(cidx, cidx, min(max_len, 60))
-                    for ridx, row in top_products.iterrows():
-                        for cidx, cname in enumerate(top_products.columns):
-                            val = row[cname]
-                            if pd.api.types.is_number(val):
-                                lname = cname.lower()
-                                if any(x in lname for x in ['sales', 'profit', 'amount', 'purchase']):
-                                    summary_ws.write(r + 1 + ridx, cidx, val, currency_fmt)
-                                elif 'percentage' in lname:
-                                    summary_ws.write(r + 1 + ridx, cidx, val, pct_value_fmt)
-                                else:
-                                    summary_ws.write(r + 1 + ridx, cidx, val)
-                            else:
-                                summary_ws.write(r + 1 + ridx, cidx, val)
-                else:
-                    summary_ws.write(r, 0, "No Product Name / Profit columns to show top product table.", default_fmt)
-
-            output.seek(0)
-            return output.read()
 
         if enable_excel_export:
             st.markdown("---")
