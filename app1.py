@@ -338,6 +338,13 @@ if transaction_file and pm_file:
         # compute financials
         merged = compute_financials(merged)
 
+        # Accuracy Matching User's Excel:
+        # We create dedicated columns for pivot values to avoid confusion with main report metrics
+        merged['pivot_sales'] = merged[product_sales_col].fillna(0)
+        merged['pivot_tax'] = merged[gst_col].fillna(0)
+        merged['pivot_qty'] = merged['Quantity'].fillna(1)
+        merged['pivot_transferred'] = merged['Tranfered Price'].fillna(0)
+
         # ----------------- Finalize final_df -----------------
         # Detect Order Id column (case-insensitive)
         order_id_col = find_col_by_names(merged.columns, ['order id', 'order_id', 'orderid', 'amazon order id', 'amazon-order-id'])
@@ -371,8 +378,10 @@ if transaction_file and pm_file:
             "Profit With Support", "Profit In Percentage With Support",
             "3% On Tranfered Price", "After 3% Profit", "After 3% Percentage"
         ]
-
-        available_cols = [c for c in final_columns if c in final_df.columns]
+        
+        # Preserve pivot columns in the dataframe but keep them out of final_columns for display
+        pivot_internal = ["pivot_sales", "pivot_tax", "pivot_qty", "pivot_transferred"]
+        available_cols = [c for c in (final_columns + pivot_internal) if c in final_df.columns]
         final_df = final_df[available_cols].copy()
         final_df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
@@ -438,10 +447,72 @@ if transaction_file and pm_file:
 
 
         st.markdown("---")
-        st.header("Processed Data (Filtered)")
-        st.dataframe(filtered, use_container_width=True, height=400)
+        st.header("Pivot Table (Summary)")
 
-        csv_bytes = filtered.to_csv(index=False).encode('utf-8')
+        # Prepare for pivot table (using filtered data for UI reactivity)
+        pivot_df = filtered.copy()
+
+        # Grouping for Pivot Table
+        # Rows: sku, settlement-id, order-item-id, asin
+        # Values: specific sums to match User's manual excel report
+        
+        pivot_rename = {
+            'SKU': 'sku',
+            'Order Id': 'Order Id',
+            'ORDER ITEM ID': 'Order Item Id',
+            'ASIN': 'asin',
+            'pivot_qty': 'Qty',
+            'pivot_sales': 'Sales Proceed',
+            'pivot_tax': 'Amazon Total Fees',
+            'pivot_transferred': 'Transferred Price'
+        }
+
+        # Value columns (Pivot-specific raw values + selected calculated columns)
+        base_value_cols = ['pivot_qty', 'pivot_sales', 'pivot_tax', 'pivot_transferred']
+        calculated_value_cols = [
+            'Amazon Fees In %', 'Our Cost', 'Our Cost As Per Qty', 'Profit', 
+            'Profit In Percentage', 'Support Amount', 'With BackEnd Price', 
+            'With Support Purchase As Per Qty', 'Profit With Support', 
+            'Profit In Percentage With Support', '3% On Tranfered Price', 
+            'After 3% Profit', 'After 3% Percentage'
+        ]
+        
+        available_values = [v for v in (base_value_cols + calculated_value_cols) if v in pivot_df.columns]
+        
+        # Index columns
+        index_candidates = ['SKU', 'Order Id', 'ORDER ITEM ID', 'ASIN']
+        available_index = [c for c in index_candidates if c in pivot_df.columns]
+
+        if available_index and available_values:
+            # Create pivot table with dropna=False to ensure missing ASINs/IDs are included
+            pivot_table = pivot_df.groupby(available_index, dropna=False)[available_values].sum().reset_index()
+            
+            # Apply renaming to match the user's requested display labels
+            pivot_table = pivot_table.rename(columns=pivot_rename)
+            
+            # Define final display order
+            requested_order = ['sku', 'Order Id', 'Order Item Id', 'asin']
+            requested_values = ['Qty', 'Sales Proceed', 'Amazon Total Fees', 'Transferred Price', 'Amazon Fees In %']
+            
+            final_index_cols = [c for c in requested_order if c in pivot_table.columns]
+            final_val_cols = [c for c in requested_values if c in pivot_table.columns]
+            other_cols = [c for c in pivot_table.columns if c not in final_index_cols and c not in final_val_cols]
+            
+            pivot_table = pivot_table[final_index_cols + final_val_cols + other_cols]
+
+            st.dataframe(pivot_table, use_container_width=True, height=400)
+            
+            pivot_csv_bytes = pivot_table.to_csv(index=False).encode('utf-8')
+            st.download_button("Download Pivot Table CSV", data=pivot_csv_bytes, file_name="pivot_summary.csv", mime='text/csv')
+
+        st.markdown("---")
+        st.header("Processed Data (Filtered)")
+        # Hide internal pivot helper columns from UI and CSV download
+        pivot_internal = ["pivot_sales", "pivot_tax", "pivot_qty", "pivot_transferred"]
+        display_raw = filtered.drop(columns=[c for c in pivot_internal if c in filtered.columns])
+        st.dataframe(display_raw, use_container_width=True, height=400)
+
+        csv_bytes = display_raw.to_csv(index=False).encode('utf-8')
         st.download_button("Download Filtered CSV", data=csv_bytes, file_name=f"{os.path.splitext(orig_name)[0]}_filtered.csv", mime='text/csv')
 
         # ---------- Styled Excel builder (exports FILTERED dataframe) ----------
