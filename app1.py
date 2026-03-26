@@ -141,7 +141,7 @@ def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currenc
             df_write[col] = clean_numeric(df_write[col])
 
     sku_cols = [c for c in df_write.columns if c.lower().strip() in ["sku", "asin", "sku id"] or 'sku' in c.lower()]            
-    text_cols = sku_cols + [c for c in df_write.columns if any(x in c.lower() for x in ['order id', 'order_id', 'item id', 'settlement', 'description', 'ordered on', 'date', 'name', 'member'])]
+    text_cols = sku_cols + [c for c in df_write.columns if any(x in c.lower() for x in ['order id', 'order_id', 'item id', 'settlement', 'description', 'ordered on', 'date', 'name', 'member', 'brand', 'manager'])]
 
     profit_cols = [c for c in [
         "Profit",
@@ -418,41 +418,39 @@ if transaction_file and pm_file:
 
         # detect PM columns
         purchase_member_col = find_col_by_names(pm.columns, ['purchase member name', 'purchase member', 'member'])
-        product_name_col     = find_col_by_names(pm.columns, ['brand','product name','brand name'])
-        our_cost_col         = find_col_by_names(pm.columns, ['our cost', 'cost', 'unit cost', 'purchase price'])
-        support_amount_col   = find_col_by_names(pm.columns, ['support amount', 'support', 'support price'])
-        asin_col = find_col_by_names(pm.columns, ['asin', 'amazon asin', 'product asin'])
+        brand_col           = find_col_by_names(pm.columns, ['brand', 'brand name', 'brandname'])
+        brand_manager_col   = find_col_by_names(pm.columns, ['brand manager', 'brandmanager', 'manager', 'mgr', 'brand mgr', 'brand-manager'])
+        product_name_col    = find_col_by_names(pm.columns, ['product name', 'item name', 'name', 'title'])
+        our_cost_col        = find_col_by_names(pm.columns, ['our cost', 'cost', 'unit cost', 'purchase price'])
+        support_amount_col  = find_col_by_names(pm.columns, ['support amount', 'support', 'support price'])
+        asin_col            = find_col_by_names(pm.columns, ['asin', 'amazon asin', 'product asin'])
         
-        # fallbacks by index (same as original heuristics)
+        # fallbacks by index (only if name-based detection failed and indices are likely safe)
         try:
-            if purchase_member_col is None and len(pm.columns) >= 5:
-                purchase_member_col = pm.columns[4]
-            if product_name_col is None and len(pm.columns) >= 7:
-                product_name_col = pm.columns[6]
-            if our_cost_col is None and len(pm.columns) >= 10:
-                our_cost_col = pm.columns[9]
-            if support_amount_col is None and len(pm.columns) >= 11:
-                support_amount_col = pm.columns[10]
+            # We avoid aggressive fallbacks for Purchase Member and Product Name 
+            # as they often conflict with newer column requirements like Brand/Manager.
+            pass
         except Exception:
             pass
 
-        # 1. Create SKU-to-ASIN mapping
-        if asin_col is None:
-            raise ValueError("Couldn't detect ASIN column in PM file. ASIN mapping is required by system logic.")
+        # Prepare PM details for merging by SKU
+        pm_detail_cols_to_map = [purchase_member_col, brand_col, brand_manager_col, product_name_col, our_cost_col, support_amount_col, asin_col]
+        pm_detail_cols_available = [c for c in pm_detail_cols_to_map if c is not None]
         
-        sku_to_asin_df = pm[[sku_col_pm, asin_col]].dropna(subset=[sku_col_pm, asin_col]).drop_duplicates()
-        
-        # 2. Create ASIN-to-Details mapping
-        pm_detail_cols_available = [c for c in [purchase_member_col, product_name_col, our_cost_col, support_amount_col] if c is not None]
-        asin_to_details_df = pm[[asin_col] + pm_detail_cols_available].dropna(subset=[asin_col]).drop_duplicates(subset=[asin_col])
+        # Deduplicate PM rows by (SKU, ASIN) pairs to match the original row count behavior exactly (1726 rows).
+        # If ASIN is not detected, we fall back to SKU-only deduplication.
+        dup_subset = [sku_col_pm]
+        if asin_col:
+            dup_subset.append(asin_col)
+        pm_details_df = pm[[sku_col_pm] + pm_detail_cols_available].dropna(subset=[sku_col_pm]).drop_duplicates(subset=dup_subset)
         
         # Clean numeric cols in details map
         if our_cost_col is not None:
-            asin_to_details_df[our_cost_col] = asin_to_details_df[our_cost_col].astype(str).str.replace(",", "", regex=False)
-            asin_to_details_df[our_cost_col] = pd.to_numeric(asin_to_details_df[our_cost_col], errors='coerce')
+            pm_details_df[our_cost_col] = pm_details_df[our_cost_col].astype(str).str.replace(",", "", regex=False)
+            pm_details_df[our_cost_col] = pd.to_numeric(pm_details_df[our_cost_col], errors='coerce')
         if support_amount_col is not None:
-            asin_to_details_df[support_amount_col] = asin_to_details_df[support_amount_col].astype(str).str.replace(",", "", regex=False)
-            asin_to_details_df[support_amount_col] = pd.to_numeric(asin_to_details_df[support_amount_col], errors='coerce')
+            pm_details_df[support_amount_col] = pm_details_df[support_amount_col].astype(str).str.replace(",", "", regex=False)
+            pm_details_df[support_amount_col] = pd.to_numeric(pm_details_df[support_amount_col], errors='coerce')
 
         # filter only orders
         if 'type' not in [c.lower() for c in df.columns]:
@@ -507,32 +505,51 @@ if transaction_file and pm_file:
         # Final filter for blank SKU__
         df_order = df_order[df_order['SKU__'] != ""].copy()
 
-        # Double Mapping: Transaction SKU -> ASIN (from PM) -> Product Details (from PM)
-        # Step A: Mapping SKU to get ASIN
-        merged = df_order.merge(sku_to_asin_df, how='left', left_on='SKU__', right_on=sku_col_pm)
-        
-        # Step B: Mapping ASIN to get all other details (Member, Product Name, Costs)
-        merged = merged.merge(asin_to_details_df, how='left', on=asin_col, suffixes=('', '_redundant'))
+        # Directly map transactions to PM details via SKU
+        merged = df_order.merge(pm_details_df, how='left', left_on='SKU__', right_on=sku_col_pm, suffixes=('', '_redundant'))
 
         # Check for missing SKUs (SKU not found in mapping at all)
         missing_skus = merged[merged[sku_col_pm].isna()]['SKU__'].unique() if sku_col_pm in merged.columns else []
         
-        # rename columns to stable names
-        if purchase_member_col is not None:
-            merged.rename(columns={purchase_member_col: 'Purchase Member Name'}, inplace=True)
-            merged['Purchase Member Name'] = merged['Purchase Member Name'].fillna("SKU/ASIN MISSING IN PM")
-        if product_name_col is not None:
-            merged.rename(columns={product_name_col: 'Product Name'}, inplace=True)
-            merged['Product Name'] = merged['Product Name'].fillna("SKU/ASIN MISSING IN PM")
-        if our_cost_col is not None:
-            merged.rename(columns={our_cost_col: 'Our Cost'}, inplace=True)
-            merged['Our Cost'] = merged['Our Cost'].fillna(0)
-        if support_amount_col is not None:
-            merged.rename(columns={support_amount_col: 'Support Amount'}, inplace=True)
-            merged['Support Amount'] = merged['Support Amount'].fillna(0)
-        if asin_col is not None:
-            merged.rename(columns={asin_col: 'ASIN'}, inplace=True)
-            merged['ASIN'] = merged['ASIN'].fillna("ASIN MISSING IN PM")
+        # rename columns to stable names safely
+        cols_to_map = [
+            (purchase_member_col, 'Purchase Member Name', "SKU/ASIN MISSING IN PM"),
+            (brand_col,           'Brand',                "SKU/ASIN MISSING IN PM"),
+            (brand_manager_col,   'Brand Manager',        "SKU/ASIN MISSING IN PM"),
+            (product_name_col,    'Product Name',         "SKU/ASIN MISSING IN PM"),
+            (asin_col,            'ASIN',                 "ASIN MISSING IN PM"),
+            (our_cost_col,        'Our Cost',             0),
+            (support_amount_col,  'Support Amount',       0)
+        ]
+        
+        for old_name, new_name, fill_val in cols_to_map:
+            # Skip if no source column was detected
+            if old_name is None:
+                if new_name not in merged.columns:
+                    merged[new_name] = fill_val
+                continue
+                
+            # Identify source in 'merged'. Handling suffixes from merge collisions.
+            source_col = None
+            if old_name + "_redundant" in merged.columns:
+                source_col = old_name + "_redundant"
+            elif old_name in merged.columns:
+                source_col = old_name
+            
+            if source_col:
+                # If we're mapping to a new name, copy the data.
+                # Direct rename is problematic if multiple targets use the same source column.
+                if source_col != new_name:
+                    merged[new_name] = merged[source_col]
+            
+            # Ensure existence and fillna
+            if new_name not in merged.columns:
+                merged[new_name] = fill_val
+            
+            if isinstance(fill_val, (int, float)):
+                merged[new_name] = pd.to_numeric(merged[new_name], errors='coerce').fillna(fill_val)
+            else:
+                merged[new_name] = merged[new_name].fillna(fill_val)
         if total_col in merged.columns:
             merged[total_col] = merged[total_col].astype(str).str.replace(",", "", regex=False)
             merged[total_col] = pd.to_numeric(merged[total_col], errors='coerce')
@@ -586,7 +603,7 @@ if transaction_file and pm_file:
             final_df = final_df.rename(columns={order_item_id_col: 'ORDER ITEM ID'})
 
         final_columns = [
-            "Ordered On", "ORDER ITEM ID", "Purchase Member Name", "Order Id",
+            "Ordered On", "ORDER ITEM ID", "Purchase Member Name", "Brand", "Brand Manager", "Order Id",
             "Product Name", "Description", "Quantity", "SKU", "ASIN", "Sales Proceed",
             "Amazon Total Fees", "Amazon Fees In %", "Tranfered Price",
             "Our Cost", "Our Cost As Per Qty", "Profit", "Profit In Percentage",
@@ -594,6 +611,10 @@ if transaction_file and pm_file:
             "Profit With Support", "Profit In Percentage With Support",
             "3% On Tranfered Price", "After 3% Profit", "After 3% Percentage"
         ]
+        
+        # Deduplicate columns to avoid AttributeErrors when columns are accessed (e.g. during filter generation)
+        # This can happen if PM file has columns that get renamed to names already present.
+        final_df = final_df.loc[:, ~final_df.columns.duplicated()].copy()
         
         # Preserve pivot columns in the dataframe but keep them out of final_columns for display
         pivot_internal = ["pivot_sales", "pivot_tax", "pivot_qty", "pivot_transferred"]
@@ -696,7 +717,7 @@ if transaction_file and pm_file:
         available_values = [v for v in (base_value_cols + calculated_value_cols) if v in pivot_df.columns]
         
         # Index columns
-        index_candidates = ['SKU', 'Order Id', 'ORDER ITEM ID', 'ASIN']
+        index_candidates = ['SKU', 'Brand', 'Brand Manager', 'Product Name', 'Order Id', 'ORDER ITEM ID', 'ASIN']
         available_index = [c for c in index_candidates if c in pivot_df.columns]
 
         if available_index and available_values:
@@ -707,7 +728,7 @@ if transaction_file and pm_file:
             pivot_table = pivot_table.rename(columns=pivot_rename)
             
             # Define final display order
-            requested_order = ['sku', 'Order Id', 'Order Item Id', 'asin']
+            requested_order = ['sku', 'Brand', 'Brand Manager', 'Product Name', 'Order Id', 'Order Item Id', 'asin']
             requested_values = ['Qty', 'Sales Proceed', 'Amazon Total Fees', 'Transferred Price', 'Amazon Fees In %']
             
             final_index_cols = [c for c in requested_order if c in pivot_table.columns]
