@@ -421,8 +421,8 @@ if transaction_file and pm_file:
         brand_col           = find_col_by_names(pm.columns, ['brand', 'brand name', 'brandname'])
         brand_manager_col   = find_col_by_names(pm.columns, ['brand manager', 'brandmanager', 'manager', 'mgr', 'brand mgr', 'brand-manager'])
         product_name_col    = find_col_by_names(pm.columns, ['product name', 'item name', 'name', 'title'])
-        our_cost_col        = find_col_by_names(pm.columns, ['our cost', 'cost', 'unit cost', 'purchase price'])
-        support_amount_col  = find_col_by_names(pm.columns, ['support amount', 'support', 'support price'])
+        our_cost_col        = find_col_by_names(pm.columns, ['cp', 'our cost', 'cost', 'unit cost', 'purchase price'])
+        support_amount_col  = find_col_by_names(pm.columns, ['additional support', 'support amount', 'support', 'support price'])
         asin_col            = find_col_by_names(pm.columns, ['asin', 'amazon asin', 'product asin'])
         
         # fallbacks by index (only if name-based detection failed and indices are likely safe)
