@@ -573,7 +573,7 @@ if transaction_file and pm_file:
         merged['pivot_sales'] = merged[product_sales_col].fillna(0)
         merged['pivot_tax'] = merged[gst_col].fillna(0)
         merged['pivot_qty'] = merged['Quantity'].fillna(1)
-        merged['pivot_transferred'] = merged['Tranfered Price'].fillna(0)
+        merged['pivot_transferred'] = merged['Transferred Price'].fillna(0)
 
         # ----------------- Finalize final_df -----------------
         # Detect Order Id column (case-insensitive)
