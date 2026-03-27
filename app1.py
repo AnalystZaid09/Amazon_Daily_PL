@@ -74,11 +74,11 @@ def find_col_by_names(df_cols, candidates):
 
 def compute_financials(df):
     df = df.copy()
-    for col in ["Sales Proceed", "Tranfered Price", "Our Cost", "Support Amount"]:
+    for col in ["Sales Proceed", "Transferred Price", "Our Cost", "Support Amount"]:
         if col not in df.columns:
             df[col] = np.nan
     df["Sales Proceed"] = clean_numeric(df["Sales Proceed"])
-    df["Tranfered Price"] = clean_numeric(df["Tranfered Price"])
+    df["Transferred Price"] = clean_numeric(df["Transferred Price"])
     df["Our Cost"] = clean_numeric(df["Our Cost"])
     df["Support Amount"] = clean_numeric(df["Support Amount"])
     
@@ -89,28 +89,28 @@ def compute_financials(df):
     
     df["Quantity"] = df["Quantity"].replace(0, 1).fillna(1)
 
-    df["Amazon Total Fees"] = df["Sales Proceed"] - df["Tranfered Price"]
-    df["Amazon Fees In %"] = np.where(df["Sales Proceed"] != 0, (df["Amazon Total Fees"] / df["Sales Proceed"]) * 100, 0)
-    df["Amazon Fees In %"] = df["Amazon Fees In %"].round(2)
+    df["Amazon Total Fees"] = df["Sales Proceed"] - df["Transferred Price"]
+    df["Amazon Fees in %"] = np.where(df["Sales Proceed"] != 0, (df["Amazon Total Fees"] / df["Sales Proceed"]) * 100, 0)
+    df["Amazon Fees in %"] = df["Amazon Fees in %"].round(2)
 
     df["Our Cost As Per Qty"] = df["Our Cost"] * df["Quantity"]
 
-    df["Profit"] = df["Tranfered Price"] - df["Our Cost As Per Qty"]
+    df["Profit"] = df["Transferred Price"] - df["Our Cost As Per Qty"]
     # Standard Margin: Profit / Sales Proceed
     df["Profit In Percentage"] = np.where(df["Sales Proceed"] != 0, (df["Profit"] * 100) / df["Sales Proceed"], 0)
     df["Profit In Percentage"] = df["Profit In Percentage"].round(2)
 
     df["With BackEnd Price"] = df["Our Cost"] - df["Support Amount"]
     df["With Support Purchase As Per Qty"] = df["With BackEnd Price"] * df["Quantity"]
-    df["Profit With Support"] = df["Tranfered Price"] - df["With Support Purchase As Per Qty"]
+    df["Profit With Support"] = df["Transferred Price"] - df["With Support Purchase As Per Qty"]
     # Standard Margin With Support: Profit With Support / Sales Proceed
     df["Profit In Percentage With Support"] = np.where(df["Sales Proceed"] != 0,
                                                      (df["Profit With Support"] * 100) / df["Sales Proceed"],
                                                      0)
     df["Profit In Percentage With Support"] = df["Profit In Percentage With Support"].round(2)
 
-    df["3% On Tranfered Price"] = (df["Tranfered Price"] * 0.03).round(2)
-    df["After 3% Profit"] = df["Profit With Support"] - df["3% On Tranfered Price"]
+    df["3% On Transferred Price"] = (df["Transferred Price"] * 0.03).round(2)
+    df["After 3% Profit"] = df["Profit With Support"] - df["3% On Transferred Price"]
     df["After 3% Percentage"] = np.where(df["With Support Purchase As Per Qty"] > 0,
                                          ((df["After 3% Profit"] / df["With Support Purchase As Per Qty"]) * 100),
                                          np.nan)
@@ -130,12 +130,9 @@ def _xl_col_letter(n):
     return s
 
 def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currency_symbol='₹', include_summary=True):
-    df_write = df.copy()
-    # Ensure columns are numeric for summing and formatting
-    # Added pivot-specific column names to the search list
-    num_cols = ["Sales Proceed", "Tranfered Price", "Profit", "Profit With Support", 
+    num_cols = ["Sales Proceed", "Transferred Price", "Profit", "Profit With Support", 
                 "After 3% Profit", "Our Cost As Per Qty", "Support Amount", 
-                "With Support Purchase As Per Qty", "Quantity", "Qty", "Transferred Price"]
+                "With Support Purchase As Per Qty", "Quantity", "Qty"]
     for col in num_cols:
         if col in df_write.columns:
             df_write[col] = clean_numeric(df_write[col])
@@ -194,7 +191,7 @@ def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currenc
             elif pd.api.types.is_float_dtype(series) or pd.api.types.is_numeric_dtype(series):
                 lname = col_name.lower()
                 # Handle specific names for pivot support
-                if any(k in lname for k in ['sales', 'profit', 'cost', 'price', 'fees', 'amount', 'tranfered', 'after 3%', 'transferred price']):
+                if any(k in lname for k in ['sales', 'profit', 'cost', 'price', 'fees', 'amount', 'transferred', 'after 3%']):
                     worksheet.set_column(col_idx, col_idx, None, currency_fmt)
                 elif 'percentage' in lname or '%' in col_name or 'pct' in lname:
                     worksheet.set_column(col_idx, col_idx, None, pct_fmt)
@@ -566,7 +563,7 @@ if transaction_file and pm_file:
             merged['Quantity'] = 1
 
         merged['Sales Proceed'] = merged[product_sales_col].fillna(0) + merged[gst_col].fillna(0)
-        merged = merged.rename(columns={total_col: 'Tranfered Price'})
+        merged = merged.rename(columns={total_col: 'Transferred Price'})
 
         # compute financials
         merged = compute_financials(merged)
@@ -605,11 +602,11 @@ if transaction_file and pm_file:
         final_columns = [
             "Ordered On", "ORDER ITEM ID", "Purchase Member Name", "Brand", "Brand Manager", "Order Id",
             "Product Name", "Description", "Quantity", "SKU", "ASIN", "Sales Proceed",
-            "Amazon Total Fees", "Amazon Fees In %", "Tranfered Price",
+            "Amazon Total Fees", "Amazon Fees in %", "Transferred Price",
             "Our Cost", "Our Cost As Per Qty", "Profit", "Profit In Percentage",
             "Support Amount", "With BackEnd Price", "With Support Purchase As Per Qty",
             "Profit With Support", "Profit In Percentage With Support",
-            "3% On Tranfered Price", "After 3% Profit", "After 3% Percentage"
+            "3% On Transferred Price", "After 3% Profit", "After 3% Percentage"
         ]
         
         # Deduplicate columns to avoid AttributeErrors when columns are accessed (e.g. during filter generation)
@@ -729,7 +726,7 @@ if transaction_file and pm_file:
             
             # Define final display order
             requested_order = ['sku', 'Brand', 'Brand Manager', 'Product Name', 'Order Id', 'Order Item Id', 'asin']
-            requested_values = ['Qty', 'Sales Proceed', 'Amazon Total Fees', 'Transferred Price', 'Amazon Fees In %']
+            requested_values = ['Qty', 'Sales Proceed', 'Amazon Total Fees', 'Amazon Fees in %', 'Transferred Price']
             
             final_index_cols = [c for c in requested_order if c in pivot_table.columns]
             final_val_cols = [c for c in requested_values if c in pivot_table.columns]
