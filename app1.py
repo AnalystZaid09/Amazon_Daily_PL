@@ -90,8 +90,8 @@ def compute_financials(df):
     df["Quantity"] = df["Quantity"].replace(0, 1).fillna(1)
 
     df["Amazon Total Fees"] = df["Sales Proceed"] - df["Transferred Price"]
-    df["Amazon Fees in %"] = np.where(df["Sales Proceed"] != 0, (df["Amazon Total Fees"] / df["Sales Proceed"]) * 100, 0)
-    df["Amazon Fees in %"] = df["Amazon Fees in %"].round(2)
+    df["Amazon Fees In %"] = np.where(df["Sales Proceed"] != 0, (df["Amazon Total Fees"] / df["Sales Proceed"]) * 100, 0)
+    df["Amazon Fees In %"] = df["Amazon Fees In %"].round(2)
 
     df["Our Cost As Per Qty"] = df["Our Cost"] * df["Quantity"]
 
@@ -602,7 +602,7 @@ if transaction_file and pm_file:
         final_columns = [
             "Ordered On", "ORDER ITEM ID", "Purchase Member Name", "Brand", "Brand Manager", "Order Id",
             "Product Name", "Description", "Quantity", "SKU", "ASIN", "Sales Proceed",
-            "Amazon Total Fees", "Amazon Fees in %", "Transferred Price",
+            "Amazon Total Fees", "Amazon Fees In %", "Transferred Price",
             "Our Cost", "Our Cost As Per Qty", "Profit", "Profit In Percentage",
             "Support Amount", "With BackEnd Price", "With Support Purchase As Per Qty",
             "Profit With Support", "Profit In Percentage With Support",
@@ -726,7 +726,7 @@ if transaction_file and pm_file:
             
             # Define final display order
             requested_order = ['sku', 'Brand', 'Brand Manager', 'Product Name', 'Order Id', 'Order Item Id', 'asin']
-            requested_values = ['Qty', 'Sales Proceed', 'Amazon Total Fees', 'Amazon Fees in %', 'Transferred Price']
+            requested_values = ['Qty', 'Sales Proceed', 'Amazon Total Fees', 'Amazon Fees In %', 'Transferred Price']
             
             final_index_cols = [c for c in requested_order if c in pivot_table.columns]
             final_val_cols = [c for c in requested_values if c in pivot_table.columns]
