@@ -130,6 +130,7 @@ def _xl_col_letter(n):
     return s
 
 def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currency_symbol='₹', include_summary=True):
+    df_write = df.copy()
     num_cols = ["Sales Proceed", "Transferred Price", "Profit", "Profit With Support", 
                 "After 3% Profit", "Our Cost As Per Qty", "Support Amount", 
                 "With Support Purchase As Per Qty", "Quantity", "Qty"]
@@ -707,7 +708,7 @@ if transaction_file and pm_file:
             'Amazon Fees In %', 'Our Cost', 'Our Cost As Per Qty', 'Profit', 
             'Profit In Percentage', 'Support Amount', 'With BackEnd Price', 
             'With Support Purchase As Per Qty', 'Profit With Support', 
-            'Profit In Percentage With Support', '3% On Tranfered Price', 
+            'Profit In Percentage With Support', '3% On Transferred Price', 
             'After 3% Profit', 'After 3% Percentage'
         ]
         
