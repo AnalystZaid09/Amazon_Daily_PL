@@ -227,6 +227,7 @@ def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currenc
             # New summary metrics
             # Standard Margin: (Profit / Sales)
             profit_in_percentage = (total_profit * 100 / total_sales) if total_sales != 0 else 0
+            
             total_support_amount = df_write.get('Support Amount', pd.Series([])).sum(skipna=True) if 'Support Amount' in df_write.columns else 0
             total_with_support_purchase = df_write.get('With Support Purchase As Per Qty', pd.Series([])).sum(skipna=True) if 'With Support Purchase As Per Qty' in df_write.columns else 0
             total_profit_with_support = df_write.get('Profit With Support', pd.Series([])).sum(skipna=True) if 'Profit With Support' in df_write.columns else 0
@@ -601,7 +602,7 @@ if transaction_file and pm_file:
             final_df = final_df.rename(columns={order_item_id_col: 'ORDER ITEM ID'})
 
         final_columns = [
-            "Ordered On", "ORDER ITEM ID", "Purchase Member Name", "Brand", "Brand Manager", "Order Id",
+            "Ordered On", "ORDER ITEM ID", "Brand", "Brand Manager", "Order Id",
             "Product Name", "Description", "Quantity", "SKU", "ASIN", "Sales Proceed",
             "Amazon Total Fees", "Amazon Fees In %", "Transferred Price",
             "Our Cost", "Our Cost As Per Qty", "Profit", "Profit In Percentage",
@@ -641,15 +642,10 @@ if transaction_file and pm_file:
             with col1:
                 product_values = ["All"] + sorted(final_df['Product Name'].dropna().unique().tolist()) if 'Product Name' in final_df.columns else ['All']
                 selected_product = st.selectbox("Filter by Product", product_values)
-            with col2:
-                member_values = ["All"] + sorted(final_df['Purchase Member Name'].dropna().unique().tolist()) if 'Purchase Member Name' in final_df.columns else ['All']
-                selected_member = st.selectbox("Filter by Member", member_values)
 
         filtered = final_df.copy()
         if selected_product != 'All':
             filtered = filtered[filtered['Product Name'] == selected_product]
-        if selected_member != 'All':
-            filtered = filtered[filtered['Purchase Member Name'] == selected_member]
 
         st.subheader("Summary Metrics (Filtered)")
         col1, col2, col3, col4 = st.columns(4)
@@ -770,7 +766,7 @@ if transaction_file and pm_file:
             st.header("Export: Styled Excel (Summary + Data) — exports current FILTERED view")
             if st.button("Create styled Excel for filtered data (multi-sheet, formatted)"):
                 try:
-                    bytes_xlsx = create_styled_workbook_bytes(filtered, header_hex="#0B5394", currency_symbol='₹')
+                    bytes_xlsx = create_styled_workbook_bytes(display_raw, header_hex="#0B5394", currency_symbol='₹')
                     st.download_button(
                         label="📥 Download Styled Excel (.xlsx) — filtered",
                         data=bytes_xlsx,
