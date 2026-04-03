@@ -248,7 +248,7 @@ def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currenc
                 # filter agg_cols to only those in df_write
                 agg_map = {k: v for k, v in agg_cols.items() if k in df_write.columns}
                 
-                top_prod_raw = df_write.groupby('Product Name', dropna=True).agg(agg_map).reset_index()
+                top_prod_raw = df_write.groupby('Product Name', dropna=False).agg(agg_map).reset_index()
                 
                 # Recalculate percentages after aggregation (Margin on Sales)
                 if 'Profit' in top_prod_raw.columns and 'Sales Proceed' in top_prod_raw.columns:
@@ -273,7 +273,7 @@ def create_styled_workbook_bytes(df: pd.DataFrame, header_hex="#0B5394", currenc
                 ]
                 # Ensure columns exist in top_prod_raw
                 available_top_cols = [c for c in final_top_cols if c in top_prod_raw.columns]
-                top_products = top_prod_raw[available_top_cols].round(2).sort_values('Profit', ascending=False).head(100)
+                top_products = top_prod_raw[available_top_cols].round(2).sort_values('Profit', ascending=False).reset_index(drop=True)
             else:
                 top_products = pd.DataFrame()
 
